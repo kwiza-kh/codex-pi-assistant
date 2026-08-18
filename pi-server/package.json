@@ -1,0 +1,15 @@
+{
+  "name": "codex-assistant-pi-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "WebSocket 桥接服务：将 Codex Assistant 前端接入 Pi Agent RPC 模式",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "ws": "^8.18.0"
+  }
+}
