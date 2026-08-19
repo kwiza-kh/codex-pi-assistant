@@ -74,12 +74,16 @@ interface PiState {
   settingsTheme: "light" | "dark" | "system";
   setSettingsTheme: (theme: "light" | "dark" | "system") => void;
   setModelDialogOpen: (open: boolean) => void;
+  /** 流式输出：开启时逐字显示，关闭时等待完整回复再显示 */
+  streamingOutput: boolean;
+  setStreamingOutput: (enabled: boolean) => void;
 
   // 动作
   connect: (url: string) => void;
   disconnect: () => void;
   refreshAll: () => Promise<void>;
   refreshSessions: () => Promise<void>;
+  deleteSession: (path: string) => Promise<void>;
   refreshSettings: () => Promise<void>;
   saveSettings: (patch: Record<string, unknown>) => Promise<void>;
   refreshProviders: () => Promise<void>;
@@ -139,12 +143,25 @@ function toolArgsToString(args: unknown): string {
 }
 
 export const useChatStore = create<PiState>()((set, get) => {
+  // 是否已在本轮应用生命周期内尝试过自动恢复上次会话（仅启动时一次）
+  let autoResumeDone = false;
+
   // 事件订阅
   const onStatus = (ev: Record<string, unknown>) => {
     const status = ev.status as ConnectionStatus;
     set({ status, lastError: status === "error" ? "连接发生错误" : get().lastError });
     if (status === "connected") {
-      get().refreshAll();
+      void get()
+        .refreshAll()
+        .then(() => {
+          if (autoResumeDone) return;
+          autoResumeDone = true;
+          const s = get();
+          // 当前是空会话且存在历史会话时，自动切换到最近一次会话
+          if (s.messages.length === 0 && s.sessions.length > 0) {
+            void s.switchSession(s.sessions[0].path);
+          }
+        });
     }
   };
 
@@ -503,6 +520,7 @@ export const useChatStore = create<PiState>()((set, get) => {
     isSettingsOpen: false,
     isModelDialogOpen: false,
     settingsTheme: "system",
+    streamingOutput: true,
 
     connect: (url) => {
       piClient.connect(url);
@@ -571,6 +589,21 @@ export const useChatStore = create<PiState>()((set, get) => {
       const res = await piClient.request("list_sessions");
       if (res.success && res.data) {
         set({ sessions: (res.data.sessions as SessionInfo[]) ?? [] });
+      }
+    },
+
+    deleteSession: async (path) => {
+      const res = await piClient.request("delete_session", { sessionPath: path });
+      if (res.success && res.data) {
+        const remaining = (res.data.sessions as SessionInfo[]) ?? [];
+        set({ sessions: remaining });
+        // 若删除的是当前会话，切换到新会话并清空消息
+        if (get().sessionFile === path) {
+          set({ sessionId: null, sessionFile: null, sessionName: null, messages: [], activeTools: [], liveMessage: null });
+          await get().newSession();
+        }
+      } else {
+        set({ lastError: res.error ?? "删除会话失败" });
       }
     },
 
@@ -895,6 +928,7 @@ export const useChatStore = create<PiState>()((set, get) => {
     setSettingsOpen: (open) => set({ isSettingsOpen: open }),
     setModelDialogOpen: (open) => set({ isModelDialogOpen: open }),
     setSettingsTheme: (theme) => set({ settingsTheme: theme }),
+    setStreamingOutput: (enabled) => set({ streamingOutput: enabled }),
   };
 });
 

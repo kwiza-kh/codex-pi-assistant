@@ -1,29 +1,61 @@
 import * as React from "react";
 import {
+  ArrowUp,
+  Check,
   ChevronDown,
   FileText,
   Image as ImageIcon,
+  ListChecks,
+  Mic,
   Plus,
   Square,
-  ArrowUp,
-  ListChecks,
 } from "lucide-react";
 import { useChatStore } from "@/store/chat";
-import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+
+/* ─────────────────────────────────────────────────────────
+ * COMPOSER — 底部输入框
+ * 单行集成控件 [+][输入框][模型][语音][发送]，与参考布局一致：
+ * 输入 / 弹出命令菜单、模型选择器弹出菜单，均带滑片高亮。
+ * 流式时发送键变为停止、语音位变为「后续消息」。
+ * ───────────────────────────────────────────────────────── */
+
+type CommandItem = { key: string; name: string; desc?: string };
+
+/* 当前正在输入的最后一个 /词，若有 */
+function parseToken(draft: string): { kind: "slash"; query: string; start: number } | null {
+  const match = /(^|\s)(\/)([\w-]*)$/.exec(draft);
+  if (!match) return null;
+  return {
+    kind: "slash",
+    query: match[3].toLowerCase(),
+    start: match.index + match[1].length,
+  };
+}
 
 export function Composer() {
   const [value, setValue] = React.useState("");
-  const [showCommands, setShowCommands] = React.useState(false);
+  const [dismissed, setDismissed] = React.useState(false);
+  const [modelOpen, setModelOpen] = React.useState(false);
+  const [plusOpen, setPlusOpen] = React.useState(false);
+  const [active, setActive] = React.useState(0);
+  const [engaged, setEngaged] = React.useState(false);
+  const [expanded, setExpanded] = React.useState(false);
+  const [rowBox, setRowBox] = React.useState<{ top: number; height: number } | null>(null);
+  const [modelBox, setModelBox] = React.useState<{ top: number; height: number } | null>(null);
+  const [modelHovered, setModelHovered] = React.useState<number | null>(null);
+  const [modelMenuLeft, setModelMenuLeft] = React.useState(0);
+  const [modelMenuBottom, setModelMenuBottom] = React.useState(0);
+
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const composerAnchorRef = React.useRef<HTMLDivElement>(null);
+  const controlsRef = React.useRef<HTMLDivElement>(null);
+  const measureRef = React.useRef<HTMLSpanElement>(null);
+  const modelRef = React.useRef<HTMLButtonElement>(null);
+  const rowRefs = React.useRef<(HTMLButtonElement | null)[]>([]);
+  const modelRowRefs = React.useRef<(HTMLButtonElement | null)[]>([]);
+
+  // store
   const isStreaming = useChatStore((s) => s.isStreaming);
   const models = useChatStore((s) => s.models);
   const model = useChatStore((s) => s.model);
@@ -37,217 +69,432 @@ export function Composer() {
   const editorPrefill = useChatStore((s) => s.editorPrefill);
   const consumeEditorPrefill = useChatStore((s) => s.consumeEditorPrefill);
 
+  const modelItems = models.map((m) => ({
+    key: `${m.provider}/${m.id}`,
+    name: m.name,
+    tag: m.provider,
+    provider: m.provider,
+    id: m.id,
+  }));
+  const currentModelItem = model
+    ? modelItems.find((m) => m.key === `${model.provider}/${model.id}`) ?? null
+    : null;
+
+  const commandItems: CommandItem[] = commands.map((c) => ({
+    key: c.name,
+    name: `/${c.name}`,
+    desc: c.description,
+  }));
+
   // 扩展 set_editor_text 预填输入框
   React.useEffect(() => {
     if (editorPrefill != null) {
       setValue(editorPrefill);
       consumeEditorPrefill();
-      requestAnimationFrame(() => {
-        textareaRef.current?.focus();
-      });
+      requestAnimationFrame(() => textareaRef.current?.focus());
     }
   }, [editorPrefill, consumeEditorPrefill]);
 
-  const autoResize = () => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "0px";
-    el.style.height = Math.min(el.scrollHeight, 200) + "px";
+  const token = dismissed ? null : parseToken(value);
+  const menu: "slash" | null = token?.kind === "slash" && commandItems.length > 0 ? "slash" : null;
+  const query = token?.query ?? "";
+  const rows: CommandItem[] =
+    menu === "slash" ? commandItems.filter((c) => c.name.replace(/^\//, "").startsWith(query)) : [];
+
+  const wide = expanded;
+
+  React.useEffect(() => {
+    setActive(0);
+    setEngaged(false);
+  }, [menu, query]);
+
+  /* 单个高亮滑片滑到当前行，而不是每行各自切换背景 */
+  React.useLayoutEffect(() => {
+    const target = rowRefs.current[active];
+    if (target) setRowBox({ top: target.offsetTop, height: target.offsetHeight });
+  }, [menu, query, active, rows.length]);
+
+  /* 模型菜单里同样的滑片高亮，浮到 hover 行，回退到当前选中模型 */
+  const modelIndex = modelItems.findIndex((m) => m.key === currentModelItem?.key);
+  React.useLayoutEffect(() => {
+    if (!modelOpen) return;
+    const target = modelRowRefs.current[modelHovered ?? (modelIndex >= 0 ? modelIndex : 0)];
+    if (target) setModelBox({ top: target.offsetTop, height: target.offsetHeight });
+  }, [modelOpen, modelHovered, modelIndex]);
+
+  /* 菜单在裁剪框外，通过测量对齐到模型触发器，而不是钉死在右边缘 */
+  React.useLayoutEffect(() => {
+    if (!modelOpen || !composerAnchorRef.current || !modelRef.current) return;
+    const anchorRect = composerAnchorRef.current.getBoundingClientRect();
+    const triggerRect = modelRef.current.getBoundingClientRect();
+    setModelMenuLeft(Math.max(0, Math.min(triggerRect.left - anchorRect.left, anchorRect.width - 176)));
+    setModelMenuBottom(anchorRect.bottom - triggerRect.top + 8);
+  }, [modelOpen, wide, currentModelItem?.name]);
+
+  React.useEffect(() => {
+    if (!modelOpen) setModelHovered(null);
+  }, [modelOpen]);
+
+  /* 换行文本上移到控件上方，随后增长到紧凑上限 */
+  React.useLayoutEffect(() => {
+    const input = textareaRef.current;
+    const controls = controlsRef.current;
+    const measure = measureRef.current;
+    const modelButton = modelRef.current;
+    if (!input || !controls || !measure || !modelButton) return;
+
+    const fixedControlsWidth = 28 * 3 + modelButton.offsetWidth; // plus + 语音 + 发送 + 模型
+    const inlineGaps = 4 * 4;
+    const inlineInputWidth = controls.clientWidth - fixedControlsWidth - inlineGaps;
+    const needsFullWidth = value.includes("\n") || measure.offsetWidth + 8 > inlineInputWidth;
+    if (needsFullWidth !== expanded) {
+      setExpanded(needsFullWidth);
+    }
+
+    input.style.height = "0px";
+    const contentHeight = input.scrollHeight;
+    input.style.height = `${Math.min(Math.max(contentHeight, 28), 100)}px`;
+    input.style.overflowY = contentHeight > 100 ? "auto" : "hidden";
+  }, [value, expanded]);
+
+  /* 点击输入框外部关闭已打开的菜单 */
+  React.useEffect(() => {
+    if (!modelOpen && !plusOpen) return;
+    const close = (event: PointerEvent) => {
+      if (!(event.target as Element).closest("[data-promptbar]")) {
+        setModelOpen(false);
+        setPlusOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, [modelOpen, plusOpen]);
+
+  const closeMenus = () => {
+    setModelOpen(false);
+    setPlusOpen(false);
+  };
+
+  const pick = (row: CommandItem) => {
+    setValue(`${token ? value.slice(0, token.start) : value}${row.name} `);
+    setDismissed(false);
+    textareaRef.current?.focus();
   };
 
   const doSend = async () => {
     const text = value.trim();
     if (!text) return;
-    if (isStreaming) {
-      await steer(text);
-    } else {
-      await sendPrompt(text);
-    }
+    if (isStreaming) await steer(text);
+    else await sendPrompt(text);
     setValue("");
-    requestAnimationFrame(() => {
-      if (textareaRef.current) {
-        textareaRef.current.style.height = "auto";
-        textareaRef.current.focus();
-      }
-    });
+    requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (menu && rows.length > 0) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setEngaged(true);
+        setActive((current) => (current + (e.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length);
+        return;
+      }
+      if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
+        e.preventDefault();
+        pick(rows[active]);
+        return;
+      }
+    }
+    if (e.key === "Escape") {
+      setDismissed(true);
+      closeMenus();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       doSend();
     }
-    if (e.key === "Escape" && showCommands) {
-      setShowCommands(false);
-    }
   };
 
-  React.useEffect(() => {
-    autoResize();
-  }, [value]);
-
-  // 斜杠命令补全
-  React.useEffect(() => {
-    if (value.startsWith("/")) {
-      const q = value.slice(1).trim().toLowerCase();
-      if (q.length <= 12) {
-        setShowCommands(true);
-      }
-    } else {
-      setShowCommands(false);
-    }
-  }, [value]);
-
-  const matchingCommands = commands
-    .filter((c) => {
-      const q = value.slice(1).trim().toLowerCase();
-      return !q || c.name.toLowerCase().includes(q);
-    })
-    .slice(0, 8);
-
+  const canSend = value.trim().length > 0;
   const pendingCount = queue.steering.length + queue.followUp.length;
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 pb-4 pt-2">
-      {showCommands && matchingCommands.length > 0 && (
-        <div className="mb-2 rounded-xl border bg-popover p-1 shadow-lg">
-          <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-            Pi 命令
-          </div>
-          {matchingCommands.map((c) => (
-            <button
-              key={c.name}
-              type="button"
-              onClick={() => {
-                setValue(`/${c.name} `);
-                setShowCommands(false);
-                textareaRef.current?.focus();
+    <div data-promptbar className="mx-auto w-full max-w-3xl px-4 pb-4 pt-2">
+      {/* composer 是锚点——菜单从它的顶边向上弹出 */}
+      <div ref={composerAnchorRef} className="relative">
+        {/* ── / 命令菜单 ─────────────────────────────── */}
+        {menu && (
+          <div
+            onMouseLeave={() => setEngaged(false)}
+            className="absolute inset-x-0 bottom-full z-10 mb-2 rounded-[10px] bg-surface p-1 shadow-raised"
+            style={{ animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom center" }}
+          >
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-x-1 rounded-[6px] bg-hover"
+              style={{
+                top: rowBox?.top ?? 0,
+                height: rowBox?.height ?? 0,
+                opacity: rowBox && engaged && rows.length > 0 ? 1 : 0,
+                transition:
+                  "top 220ms cubic-bezier(0.23,1,0.32,1), height 220ms cubic-bezier(0.23,1,0.32,1), opacity 150ms ease",
               }}
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-accent"
-            >
-              <ListChecks className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="font-medium">/{c.name}</span>
-              {c.description && (
-                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                  {c.description}
+            />
+            {rows.map((row, i) => (
+              <button
+                key={row.key}
+                type="button"
+                ref={(el) => {
+                  rowRefs.current[i] = el;
+                }}
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => {
+                  setActive(i);
+                  setEngaged(true);
+                }}
+                onClick={() => pick(row)}
+                className="relative z-10 flex h-9 w-full items-center gap-2.5 rounded-[6px] px-2 text-left"
+              >
+                <span className="flex size-[22px] shrink-0 items-center justify-center text-ink-2">
+                  <ListChecks size={15} />
                 </span>
-              )}
-              <span className="shrink-0 text-[10px] uppercase text-ink-3">{c.source ?? ""}</span>
-            </button>
-          ))}
-        </div>
-      )}
+                <span className="shrink-0 text-[12.5px] font-medium text-ink">{row.name}</span>
+                <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3">{row.desc}</span>
+              </button>
+            ))}
+            {rows.length === 0 && (
+              <div className="flex h-9 items-center px-2 text-[12px] text-ink-3">没有匹配「{query}」</div>
+            )}
+            <div className="mt-1 border-t border-line px-2 pt-1.5 pb-1 text-[11px] text-ink-3">输入以搜索命令</div>
+          </div>
+        )}
 
-      <div className="relative rounded-window bg-surface shadow-card transition-shadow focus-within:shadow-raised">
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={onKeyDown}
-          rows={1}
-          placeholder={isStreaming ? "向运行中的 Pi 发送 steering 消息…" : "给 Pi 发送消息，或输入 / 使用命令…"}
-          className="block max-h-[200px] w-full resize-none bg-transparent px-4 pt-4 pb-12 text-[15px] leading-7 text-ink outline-none placeholder:text-ink-3"
-        />
-        <div className="absolute inset-x-2.5 bottom-2.5 flex items-center justify-between">
-          <div className="flex items-center gap-1">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon-sm" className="text-ink-3 hover:text-ink" aria-label="添加附件">
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" side="top" sideOffset={8}>
-                <DropdownMenuLabel>添加附件</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem disabled>
-                  <ImageIcon />
-                  上传图片
-                  <span className="ml-auto text-xs text-muted-foreground">待接入</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem disabled>
-                  <FileText />
-                  上传文件
-                  <span className="ml-auto text-xs text-muted-foreground">待接入</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="secondary" size="sm" className="h-8 gap-1.5 rounded-chip text-xs font-medium text-ink-2 hover:text-ink">
-                  {model?.name ?? "选择模型"}
-                  <ChevronDown className="h-3.5 w-3.5" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" side="top" sideOffset={8} className="w-72">
-                <DropdownMenuLabel>选择模型（{models.length}）</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <div className="scrollbar-thin max-h-72 overflow-y-auto">
-                  {models.map((m) => (
-                    <DropdownMenuItem
-                      key={`${m.provider}/${m.id}`}
-                      onClick={() => setModel(m.provider, m.id)}
-                      className="flex flex-col items-start gap-0.5"
-                    >
-                      <span className="flex w-full items-center justify-between">
-                        <span className="font-medium">{m.name}</span>
-                        {model?.id === m.id && model?.provider === m.provider && (
-                          <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                        )}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {m.provider}/{m.id} · {m.contextWindow ? `${m.contextWindow.toLocaleString()} ctx` : ""}
-                        {m.reasoning ? " · reasoning" : ""}
-                      </span>
-                    </DropdownMenuItem>
-                  ))}
-                </div>
-              </DropdownMenuContent>
-            </DropdownMenu>
-
-            {pendingCount > 0 && (
-              <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
-                队列 {pendingCount}
-              </span>
+        {/* ── 模型菜单 ─────────────────────────────────── */}
+        {modelOpen && (
+          <div
+            onMouseLeave={() => setModelHovered(null)}
+            className="absolute z-10 w-44 rounded-[10px] bg-surface p-1 shadow-raised"
+            style={{ left: modelMenuLeft, bottom: modelMenuBottom, animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom left" }}
+          >
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-x-1 rounded-[6px] bg-hover"
+              style={{
+                top: modelBox?.top ?? 0,
+                height: modelBox?.height ?? 0,
+                opacity: modelBox && modelHovered !== null ? 1 : 0,
+                transition:
+                  "top 220ms cubic-bezier(0.23,1,0.32,1), height 220ms cubic-bezier(0.23,1,0.32,1), opacity 150ms ease",
+              }}
+            />
+            {modelItems.map((m, i) => (
+              <button
+                key={m.key}
+                type="button"
+                ref={(el) => {
+                  modelRowRefs.current[i] = el;
+                }}
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setModelHovered(i)}
+                onClick={() => {
+                  setModel(m.provider, m.id);
+                  setModelOpen(false);
+                  textareaRef.current?.focus();
+                }}
+                className="relative z-10 flex h-[30px] w-full items-center gap-2 rounded-[6px] px-2 text-left"
+              >
+                <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{m.name}</span>
+                {m.tag && <span className="shrink-0 text-[11px] text-ink-3">{m.tag}</span>}
+                <span className={cn("shrink-0 text-ink", m.key === currentModelItem?.key ? "" : "invisible")}>
+                  <Check size={13} strokeWidth={2.5} />
+                </span>
+              </button>
+            ))}
+            {modelItems.length === 0 && (
+              <div className="flex h-[30px] items-center px-2 text-[12px] text-ink-3">暂无可用模型</div>
             )}
           </div>
+        )}
 
-          <div className="flex items-center gap-1">
+        {/* ── 附件菜单（+ 按钮） ───────────────────────── */}
+        {plusOpen && (
+          <div
+            className="absolute bottom-full left-0 z-10 mb-2 w-52 rounded-[10px] bg-surface p-1 shadow-raised"
+            style={{ animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom left" }}
+          >
+            <div className="flex h-7 items-center px-2 text-[11px] font-medium text-ink-3">添加附件</div>
+            <button
+              type="button"
+              disabled
+              className="relative z-10 flex h-9 w-full items-center gap-2.5 rounded-[6px] px-2 text-left opacity-60"
+            >
+              <span className="flex size-[22px] shrink-0 items-center justify-center text-ink-2">
+                <ImageIcon size={15} />
+              </span>
+              <span className="text-[12.5px] font-medium text-ink">上传图片</span>
+              <span className="ml-auto text-[11px] text-ink-3">待接入</span>
+            </button>
+            <button
+              type="button"
+              disabled
+              className="relative z-10 flex h-9 w-full items-center gap-2.5 rounded-[6px] px-2 text-left opacity-60"
+            >
+              <span className="flex size-[22px] shrink-0 items-center justify-center text-ink-2">
+                <FileText size={15} />
+              </span>
+              <span className="text-[12.5px] font-medium text-ink">上传文件</span>
+              <span className="ml-auto text-[11px] text-ink-3">待接入</span>
+            </button>
+          </div>
+        )}
+
+        {/* ── 输入框 ───────────────────────────────────── */}
+        <div className="relative isolate flex flex-col gap-1.5 overflow-hidden rounded-[14px] border border-line bg-surface p-1.5 shadow-card transition-[border-color] duration-150 focus-within:border-line-strong">
+          <span
+            ref={measureRef}
+            aria-hidden="true"
+            className="pointer-events-none absolute invisible whitespace-pre text-[13px] leading-[18px]"
+          >
+            {value}
+          </span>
+
+          <div
+            ref={controlsRef}
+            className={cn(
+              "grid items-end gap-x-1 gap-y-1.5",
+              wide
+                ? "grid-cols-[28px_auto_minmax(0,1fr)_28px_28px]"
+                : "grid-cols-[28px_minmax(0,1fr)_auto_28px_28px]",
+            )}
+          >
+            {/* + 附件 */}
+            <button
+              type="button"
+              aria-label="添加附件"
+              aria-expanded={plusOpen}
+              onClick={() => {
+                setModelOpen(false);
+                setPlusOpen((c) => !c);
+                textareaRef.current?.focus();
+              }}
+              className={cn(
+                "flex size-7 shrink-0 items-center justify-center justify-self-start rounded-[8px] text-ink-3 transition-[background-color,color,transform] duration-150 hover:bg-hover hover:text-ink active:scale-[0.94]",
+                plusOpen && "bg-hover text-ink",
+                wide ? "col-start-1 row-start-2" : "col-start-1 row-start-1",
+              )}
+            >
+              <Plus size={16} strokeWidth={2} />
+            </button>
+
+            {/* 输入框 */}
+            <textarea
+              ref={textareaRef}
+              rows={1}
+              value={value}
+              onChange={(e) => {
+                setValue(e.target.value);
+                setDismissed(false);
+                setPlusOpen(false);
+              }}
+              onKeyDown={onKeyDown}
+              placeholder={isStreaming ? "向运行中的 Pi 发送 steering 消息…" : "给 Pi 发送消息，或输入 / 使用命令…"}
+              aria-label="消息输入"
+              className={cn(
+                "min-h-7 min-w-0 w-full resize-none bg-transparent px-1 py-[5px] text-[13px] leading-[18px] text-ink outline-none [overflow-wrap:anywhere] placeholder:text-ink-3",
+                wide ? "col-span-full col-start-1 row-start-1" : "col-start-2 row-start-1",
+              )}
+            />
+
+            {/* 模型选择器 */}
+            <button
+              ref={modelRef}
+              type="button"
+              aria-expanded={modelOpen}
+              aria-label="选择模型"
+              onClick={() => {
+                setPlusOpen(false);
+                setModelOpen((c) => !c);
+              }}
+              className={cn(
+                "flex h-7 shrink-0 items-center gap-1 rounded-[8px] px-1.5 text-[12px] font-medium text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink",
+                wide ? "col-start-2 row-start-2 justify-self-start" : "col-start-3 row-start-1",
+              )}
+            >
+              {currentModelItem?.name ?? "选择模型"}
+              <span className="text-ink-3">
+                <ChevronDown size={11} strokeWidth={2.4} />
+              </span>
+            </button>
+
+            {/* 语音 / 后续消息 */}
             {isStreaming ? (
-              <>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button variant="ghost" size="sm" className="h-8 text-xs text-ink-2" onClick={() => followUp(value.trim() || "继续")}>
-                      后续消息
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>排队为 follow_up，在 Pi 完成后发送</TooltipContent>
-                </Tooltip>
-                <Button size="icon" variant="secondary" aria-label="停止生成" onClick={abort}>
-                  <Square className="h-3.5 w-3.5 fill-current" />
-                </Button>
-              </>
+              <button
+                type="button"
+                onClick={() => followUp(value.trim() || "继续")}
+                className={cn(
+                  "flex h-7 shrink-0 items-center justify-center rounded-[8px] px-1.5 text-[12px] font-medium text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink",
+                  wide ? "col-start-4 row-start-2" : "col-start-4 row-start-1",
+                )}
+              >
+                后续
+              </button>
             ) : (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    size="icon"
-                    aria-label="发送"
-                    disabled={!value.trim()}
-                    onClick={doSend}
-                    className="h-8 w-8 rounded-control bg-ink text-page shadow-btn hover:opacity-90"
-                  >
-                    <ArrowUp className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>发送（Enter）· 换行（Shift+Enter）</TooltipContent>
-              </Tooltip>
+              <button
+                type="button"
+                aria-label="语音输入（待接入）"
+                title="语音输入（待接入）"
+                disabled
+                className={cn(
+                  "flex size-7 shrink-0 cursor-not-allowed items-center justify-center rounded-[8px] text-ink-3 opacity-40",
+                  wide ? "col-start-4 row-start-2" : "col-start-4 row-start-1",
+                )}
+              >
+                <Mic size={15} strokeWidth={2} />
+              </button>
+            )}
+
+            {/* 发送 / 停止 */}
+            {isStreaming ? (
+              <button
+                type="button"
+                aria-label="停止生成"
+                onClick={abort}
+                className={cn(
+                  "flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-ink text-surface transition-transform duration-200 active:scale-[0.94]",
+                  wide ? "col-start-5 row-start-2" : "col-start-5 row-start-1",
+                )}
+              >
+                <Square size={14} className="fill-current" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                aria-label="发送"
+                disabled={!canSend}
+                onClick={doSend}
+                className={cn(
+                  "flex size-7 shrink-0 items-center justify-center rounded-[8px] transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94]",
+                  wide ? "col-start-5 row-start-2" : "col-start-5 row-start-1",
+                )}
+                style={{
+                  background: canSend ? "var(--ink)" : "var(--line-strong)",
+                  color: canSend ? "var(--surface)" : "var(--ink-2)",
+                }}
+              >
+                <ArrowUp size={16} strokeWidth={2.4} />
+              </button>
             )}
           </div>
         </div>
       </div>
-      <p className="mt-2 text-center text-[11px] leading-4 text-ink-3">
-        Pi Agent 驱动 · 支持 /skill:name、/prompt 模板与扩展命令 · Enter 发送，Shift+Enter 换行
+
+      <p className="mt-2 flex items-center justify-center gap-2 text-center text-[11px] leading-4 text-ink-3">
+        <span>Pi Agent 驱动 · 支持 / 命令 · Enter 发送，Shift+Enter 换行</span>
+        {pendingCount > 0 && (
+          <span className="rounded-full bg-amber-500/10 px-1.5 py-px font-medium text-amber-600 dark:text-amber-400">
+            队列 {pendingCount}
+          </span>
+        )}
       </p>
     </div>
   );

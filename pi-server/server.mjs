@@ -15,9 +15,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, renameSync, mkdirSync, unlinkSync, rmdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -211,6 +211,30 @@ function listSessions() {
   }
   sessions.sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
   return sessions;
+}
+
+function deleteSession(sessionPath) {
+  if (!sessionPath || typeof sessionPath !== "string") {
+    throw new Error("缺少 sessionPath");
+  }
+  const target = resolve(sessionPath);
+  const sessionDir = resolve(SESSION_DIR);
+  // 仅允许删除会话目录内的 .jsonl 文件，避免越界删除
+  if (!target.endsWith(".jsonl") || !target.startsWith(sessionDir + sep)) {
+    throw new Error("非法会话路径");
+  }
+  if (!existsSync(target)) {
+    throw new Error("会话文件不存在");
+  }
+  unlinkSync(target);
+  // 若父目录已空，一并清理
+  try {
+    const parent = dirname(target);
+    if (readdirSync(parent).length === 0) rmdirSync(parent);
+  } catch {
+    // 忽略目录清理失败
+  }
+  return { path: target };
 }
 
 // ---------------------------------------------------------------------------
@@ -450,7 +474,7 @@ function sendToAll(obj) {
 }
 
 // 服务端命令
-const SERVER_COMMANDS = new Set(["ping", "list_sessions", "restart", "get_cwd", "get_server_info", "get_settings", "set_settings", "list_providers", "get_provider_auth", "set_provider_api_key", "remove_provider_api_key", "get_models", "refresh_models"]);
+const SERVER_COMMANDS = new Set(["ping", "list_sessions", "delete_session", "restart", "get_cwd", "get_server_info", "get_settings", "set_settings", "list_providers", "get_provider_auth", "set_provider_api_key", "remove_provider_api_key", "get_models", "refresh_models"]);
 
 async function handleServerCommand(msg) {
   switch (msg.type) {
@@ -527,6 +551,13 @@ async function handleServerCommand(msg) {
       }
     case "list_sessions":
       return { type: "response", id: msg.id, command: "list_sessions", success: true, data: { sessions: listSessions() } };
+    case "delete_session":
+      try {
+        const info = deleteSession(msg.sessionPath);
+        return { type: "response", id: msg.id, command: "delete_session", success: true, data: { ...info, sessions: listSessions() } };
+      } catch (err) {
+        return { type: "response", id: msg.id, command: "delete_session", success: false, error: err.message };
+      }
     case "restart": {
       const info = restartPi(msg.cwd);
       return { type: "response", id: msg.id, command: "restart", success: true, data: info };

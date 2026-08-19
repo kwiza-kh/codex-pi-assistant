@@ -5,10 +5,8 @@ import {
   ChevronRight,
   Copy,
   RefreshCw,
-  TerminalSquare,
   ThumbsDown,
   ThumbsUp,
-  Wrench,
 } from "lucide-react";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { useChatStore, toolArgsToPrettyString } from "@/store/chat";
@@ -44,13 +42,11 @@ function ActionButton({
 }
 
 function CollapsibleCard({
-  icon,
   title,
   children,
   defaultOpen = false,
   tone = "default",
 }: {
-  icon: React.ReactNode;
   title: string;
   children: React.ReactNode;
   defaultOpen?: boolean;
@@ -69,8 +65,7 @@ function CollapsibleCard({
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-ink-2 transition-colors hover:bg-hover"
       >
-        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        {icon}
+        {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
         <span className="min-w-0 flex-1 truncate">{title}</span>
       </button>
       {open && <div className="border-t border-dashed border-line px-3 py-2">{children}</div>}
@@ -81,7 +76,7 @@ function CollapsibleCard({
 function ToolCallBlock({ block }: { block: { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> | string } }) {
   const pretty = typeof block.arguments === "string" ? block.arguments : toolArgsToPrettyString(block.arguments);
   return (
-    <CollapsibleCard icon={<Wrench className="h-3.5 w-3.5" />} title={`调用工具：${block.name}`}>
+    <CollapsibleCard title={`调用工具：${block.name}`}>
       <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-5 text-muted-foreground">
         {pretty}
       </pre>
@@ -97,7 +92,6 @@ function ThinkingTrace({ thinking, streaming }: { thinking: string; streaming: b
 function ToolResultCard({ message }: { message: UIMessage }) {
   return (
     <CollapsibleCard
-      icon={<TerminalSquare className="h-3.5 w-3.5" />}
       title={`工具结果：${message.toolName ?? "unknown"}${message.isError ? "（失败）" : ""}`}
       tone={message.isError ? "error" : "default"}
       defaultOpen={Boolean(message.isError)}
@@ -112,7 +106,6 @@ function ToolResultCard({ message }: { message: UIMessage }) {
 function BashExecutionCard({ message }: { message: UIMessage }) {
   return (
     <CollapsibleCard
-      icon={<TerminalSquare className="h-3.5 w-3.5" />}
       title={`$ ${message.command ?? ""}`}
       defaultOpen
     >
@@ -137,6 +130,7 @@ export function MessageBubble({ message, isLast, showTimestamp = true, onRegener
   const [copied, setCopied] = React.useState(false);
   const [liked, setLiked] = React.useState<"up" | "down" | null>(null);
   const isStreaming = useChatStore((s) => s.isStreaming);
+  const streamingOutput = useChatStore((s) => s.streamingOutput);
   const isUser = message.role === "user";
   const isToolResult = message.role === "toolResult";
   const isBashExecution = message.role === "bashExecution";
@@ -170,10 +164,7 @@ export function MessageBubble({ message, isLast, showTimestamp = true, onRegener
 
   if (isToolResult) {
     return (
-      <div className="flex gap-3 animate-fade-in">
-        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-          <TerminalSquare className="h-4 w-4" />
-        </div>
+      <div className="animate-fade-in">
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
             <span className="font-semibold">工具</span>
@@ -187,10 +178,7 @@ export function MessageBubble({ message, isLast, showTimestamp = true, onRegener
 
   if (isBashExecution) {
     return (
-      <div className="flex gap-3 animate-fade-in">
-        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-          <TerminalSquare className="h-4 w-4" />
-        </div>
+      <div className="animate-fade-in">
         <div className="min-w-0 flex-1">
           <div className="mb-1 text-xs font-semibold text-muted-foreground">直接 bash</div>
           <BashExecutionCard message={message} />
@@ -212,7 +200,7 @@ export function MessageBubble({ message, isLast, showTimestamp = true, onRegener
             {message.blocks.map((block, i) => {
               if (block.type === "text") {
                 if (!block.text) return null;
-                if (isLast && isStreaming && i === lastTextIndex) {
+                if (isLast && isStreaming && streamingOutput && i === lastTextIndex) {
                   return <StreamingText key={i} content={block.text} streaming />;
                 }
                 return <Markdown key={i} content={block.text} />;
@@ -315,7 +303,7 @@ export function ActiveToolsCard() {
   if (activeTools.length === 0) return null;
   const active = activeTools.some((t) => t.status === "running");
   return (
-    <div className="ml-11 mt-2">
+    <div className="mt-2">
       <ThinkingState
         variant="Coding"
         active={active}

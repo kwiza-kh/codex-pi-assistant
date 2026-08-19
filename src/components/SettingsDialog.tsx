@@ -240,6 +240,8 @@ export function SettingsDialog() {
   const cycleThinkingLevel = useChatStore((s) => s.cycleThinkingLevel);
   const autoCompactionEnabled = useChatStore((s) => s.autoCompactionEnabled);
   const setAutoCompaction = useChatStore((s) => s.setAutoCompaction);
+  const streamingOutput = useChatStore((s) => s.streamingOutput);
+  const setStreamingOutput = useChatStore((s) => s.setStreamingOutput);
   const steeringMode = useChatStore((s) => s.steeringMode);
   const followUpMode = useChatStore((s) => s.followUpMode);
   const setSteeringMode = useChatStore((s) => s.setSteeringMode);
@@ -344,6 +346,11 @@ export function SettingsDialog() {
 
                 <SettingRow title="自动压缩上下文" description="运行时开关，持久化见「压缩重试」标签">
                   <BooleanField value={autoCompactionEnabled} onSave={setAutoCompaction} />
+                </SettingRow>
+                <Separator />
+
+                <SettingRow title="流式输出" description="开启时回复逐字显示；关闭时等待完整回复后一次性显示">
+                  <BooleanField value={streamingOutput} onSave={setStreamingOutput} />
                 </SettingRow>
                 <Separator />
 

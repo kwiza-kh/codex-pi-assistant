@@ -48,7 +48,7 @@ export function ChatView() {
             <div className="animate-fade-in">
               <MessageBubble message={liveMessage} isLast showTimestamp={false} />
               {isStreaming && (
-                <div className="ml-11 mt-1">
+                <div className="mt-1">
                   <LoadingState label="正在生成" />
                 </div>
               )}

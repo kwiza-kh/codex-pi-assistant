@@ -1,5 +1,6 @@
 import { useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
+  AlertTriangle,
   ChevronDown,
   MessageSquare,
   MessageSquarePlus,
@@ -9,6 +10,7 @@ import {
   Search,
   Settings,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 import { cn, truncateTitle } from "@/lib/utils";
@@ -84,8 +86,25 @@ function SectionLabel({ children, action }: { children: ReactNode; action?: Reac
 function SessionRow({ session }: { session: SessionInfo }) {
   const sessionId = useChatStore((s) => s.sessionId);
   const switchSession = useChatStore((s) => s.switchSession);
+  const deleteSession = useChatStore((s) => s.deleteSession);
   const active = session.id === sessionId;
   const title = truncateTitle(session.title || session.id, 24);
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const onDelete = async () => {
+    if (!confirming) {
+      setConfirming(true);
+      return;
+    }
+    setDeleting(true);
+    try {
+      await deleteSession(session.path);
+    } finally {
+      setDeleting(false);
+      setConfirming(false);
+    }
+  };
 
   return (
     <button
@@ -93,10 +112,11 @@ function SessionRow({ session }: { session: SessionInfo }) {
       type="button"
       title={`${session.title || session.id}${session.cwd ? ` · ${session.cwd}` : ""}`}
       onClick={() => {
-        if (!active) switchSession(session.path);
+        if (!active && !confirming) switchSession(session.path);
       }}
+      onMouseLeave={() => setConfirming(false)}
       className={cn(
-        "sidebar-row relative z-10 mx-2 flex h-8 items-center rounded-[8px] px-2 text-left transition-[width,background-color,color,transform] duration-150 active:scale-[0.96]",
+        "sidebar-row group relative z-10 mx-2 flex h-8 items-center rounded-[8px] px-2 text-left transition-[width,background-color,color,transform] duration-150 active:scale-[0.96]",
         active ? "bg-hover-2 group-hover/glide:bg-transparent" : "",
       )}
     >
@@ -104,6 +124,35 @@ function SessionRow({ session }: { session: SessionInfo }) {
       <span className={cn("sidebar-copy ml-1.5 min-w-0 flex-1 truncate text-[13.5px] font-medium", active ? "text-ink" : "text-ink-2")}>
         {title}
       </span>
+      {confirming ? (
+        <span
+          role="button"
+          aria-label="确认删除会话"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          className={cn(
+            "flex h-5 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-[11px] font-semibold text-red transition-colors hover:bg-red-tint",
+            deleting && "opacity-50",
+          )}
+        >
+          <AlertTriangle size={13} />
+          {deleting ? "删除中" : "确认"}
+        </span>
+      ) : (
+        <span
+          role="button"
+          aria-label="删除会话"
+          onClick={(e) => {
+            e.stopPropagation();
+            setConfirming(true);
+          }}
+          className="flex size-6 shrink-0 items-center justify-center rounded-[6px] text-ink-3 opacity-0 transition-all duration-150 hover:bg-red-tint hover:text-red group-hover:opacity-100"
+        >
+          <Trash2 size={14} />
+        </span>
+      )}
     </button>
   );
 }
