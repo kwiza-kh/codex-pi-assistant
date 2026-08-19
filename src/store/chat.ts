@@ -4,6 +4,7 @@ import {
   parseAgentMessage,
   parseAgentMessages,
   toolResultText,
+  type BashResult,
   type ExtensionUiRequest,
   type PiCatalogModel,
   type PiCommand,
@@ -36,6 +37,7 @@ interface PiState {
   sessionName: string | null;
   model: PiModel | null;
   thinkingLevel: string;
+  availableThinkingLevels: string[];
   isStreaming: boolean;
   isCompacting: boolean;
   autoCompactionEnabled: boolean;
@@ -45,6 +47,16 @@ interface PiState {
   stats: PiSessionStats | null;
   activeTools: ToolActivity[];
   liveMessage: UIMessage | null;
+  /** 直接 RPC bash 命令的实时流式输出 */
+  activeBashOutput: string | null;
+  /** 扩展通过 set_editor_text 预填输入框的内容 */
+  editorPrefill: string | null;
+  /** 扩展 setStatus 状态条目（statusKey → statusText） */
+  extensionStatus: Record<string, string>;
+  /** 扩展 setWidget 文本块（widgetKey → lines） */
+  extensionWidgets: Record<string, { lines: string[]; placement: "aboveEditor" | "belowEditor" }>;
+  /** 扩展 setTitle 请求的窗口标题 */
+  extensionTitle: string | null;
   extensionUi: ExtensionUiRequest | null;
   notice: string | null;
   settings: PiSettings | null;
@@ -82,6 +94,8 @@ interface PiState {
   setModel: (provider: string, modelId: string) => Promise<void>;
   cycleModel: () => Promise<void>;
   setThinkingLevel: (level: string) => Promise<void>;
+  cycleThinkingLevel: () => Promise<void>;
+  getAvailableThinkingLevels: () => Promise<void>;
   newSession: () => Promise<void>;
   switchSession: (path: string) => Promise<void>;
   setSessionName: (name: string) => Promise<void>;
@@ -99,10 +113,13 @@ interface PiState {
   exportHtml: (outputPath?: string) => Promise<string | null>;
   setSteeringMode: (mode: "all" | "one-at-a-time") => Promise<void>;
   setFollowUpMode: (mode: "all" | "one-at-a-time") => Promise<void>;
-  bash: (command: string) => Promise<{ output: string; exitCode: number } | null>;
+  bash: (command: string) => Promise<BashResult | null>;
+  abortBash: () => void;
+  getLastAssistantText: () => Promise<string | null>;
   respondExtensionUi: (response: Record<string, unknown>) => void;
   dismissExtensionUi: () => void;
   clearNotice: () => void;
+  consumeEditorPrefill: () => void;
 
   setSidebarOpen: (open: boolean) => void;
   setCommandPaletteOpen: (open: boolean) => void;
@@ -139,9 +156,54 @@ export const useChatStore = create<PiState>()((set, get) => {
     // 单次底层 run 结束；可能还有 retry / compaction / queued continuation
   };
 
+  const onTurnEnd = (ev: Record<string, unknown>) => {
+    // turn 结束：把完整的 assistant 消息落定到消息列表（去重）
+    const raw = ev.message as Record<string, unknown> | undefined;
+    const msg = raw ? parseAgentMessage(raw) : null;
+    if (msg && msg.role === "assistant") {
+      set((s) => ({
+        liveMessage: null,
+        messages: s.messages.some((m) => m.id === msg.id) ? s.messages : [...s.messages, msg],
+      }));
+    }
+  };
+
   const onAgentSettled = () => {
-    set({ isStreaming: false, liveMessage: null, activeTools: [] });
+    set({ isStreaming: false, liveMessage: null, activeTools: [], activeBashOutput: null });
     get().refreshAll();
+  };
+
+  const onBashUpdate = (ev: Record<string, unknown>) => {
+    const delta = String(ev.delta ?? "");
+    set((s) => ({ activeBashOutput: (s.activeBashOutput ?? "") + delta }));
+  };
+
+  const onAutoRetryStart = (ev: Record<string, unknown>) => {
+    const attempt = Number(ev.attempt ?? 1);
+    const max = Number(ev.maxAttempts ?? "?");
+    set({ notice: `瞬时错误，自动重试（${attempt}/${max}）…` });
+  };
+
+  const onAutoRetryEnd = (ev: Record<string, unknown>) => {
+    if (ev.success === false) {
+      const finalError = String(ev.finalError ?? "未知错误");
+      set({ lastError: `重试失败：${finalError}` });
+    }
+    set({ notice: null });
+  };
+
+  const onSummarizationRetryScheduled = (ev: Record<string, unknown>) => {
+    const attempt = Number(ev.attempt ?? 1);
+    const max = Number(ev.maxAttempts ?? "?");
+    set({ notice: `摘要生成失败，稍后重试（${attempt}/${max}）…` });
+  };
+
+  const onSummarizationRetryAttemptStart = () => {
+    set({ notice: "摘要生成重试中…" });
+  };
+
+  const onSummarizationRetryFinished = () => {
+    set({ notice: null });
   };
 
   const onMessageStart = (ev: Record<string, unknown>) => {
@@ -314,9 +376,43 @@ export const useChatStore = create<PiState>()((set, get) => {
       setTimeout(() => {
         if (get().notice) set({ notice: null });
       }, 4000);
-    } else if (method === "setStatus" || method === "setWidget" || method === "setTitle") {
-      // 桌面端暂时忽略这些状态栏/小组件信息
+    } else if (method === "set_editor_text") {
+      set({ editorPrefill: String(ev.text ?? "") });
+    } else if (method === "setStatus") {
+      const key = String(ev.statusKey ?? "");
+      if (!key) return;
+      const text = ev.statusText;
+      set((s) => {
+        const next = { ...s.extensionStatus };
+        if (text == null || String(text) === "") delete next[key];
+        else next[key] = String(text);
+        return { extensionStatus: next };
+      });
+    } else if (method === "setWidget") {
+      const key = String(ev.widgetKey ?? "");
+      if (!key) return;
+      const lines = ev.widgetLines;
+      set((s) => {
+        const next = { ...s.extensionWidgets };
+        if (!Array.isArray(lines)) {
+          delete next[key];
+        } else {
+          next[key] = {
+            lines: lines.map(String),
+            placement: ev.widgetPlacement === "belowEditor" ? "belowEditor" : "aboveEditor",
+          };
+        }
+        return { extensionWidgets: next };
+      });
+    } else if (method === "setTitle") {
+      set({ extensionTitle: ev.title == null ? null : String(ev.title) });
     }
+  };
+
+  const onExtensionError = (ev: Record<string, unknown>) => {
+    const extensionPath = String(ev.extensionPath ?? "?");
+    const error = String(ev.error ?? "未知错误");
+    set({ lastError: `扩展错误（${extensionPath}）：${error}` });
   };
 
   const onStderr = (ev: Record<string, unknown>) => {
@@ -340,16 +436,25 @@ export const useChatStore = create<PiState>()((set, get) => {
     piClient.on("agent_start", onAgentStart),
     piClient.on("agent_end", onAgentEnd),
     piClient.on("agent_settled", onAgentSettled),
+    piClient.on("turn_start", onAgentStart),
+    piClient.on("turn_end", onTurnEnd),
     piClient.on("message_start", onMessageStart),
     piClient.on("message_update", onMessageUpdate),
     piClient.on("message_end", onMessageEnd),
+    piClient.on("bash_execution_update", onBashUpdate),
     piClient.on("tool_execution_start", onToolStart),
     piClient.on("tool_execution_update", onToolUpdate),
     piClient.on("tool_execution_end", onToolEnd),
     piClient.on("queue_update", onQueueUpdate),
     piClient.on("compaction_start", onCompactionStart),
     piClient.on("compaction_end", onCompactionEnd),
+    piClient.on("auto_retry_start", onAutoRetryStart),
+    piClient.on("auto_retry_end", onAutoRetryEnd),
+    piClient.on("summarization_retry_scheduled", onSummarizationRetryScheduled),
+    piClient.on("summarization_retry_attempt_start", onSummarizationRetryAttemptStart),
+    piClient.on("summarization_retry_finished", onSummarizationRetryFinished),
     piClient.on("extension_ui_request", onExtensionUi),
+    piClient.on("extension_error", onExtensionError),
     piClient.on("stderr", onStderr),
     piClient.on("agent_exit", onAgentExit),
   ];
@@ -369,6 +474,7 @@ export const useChatStore = create<PiState>()((set, get) => {
     sessionName: null,
     model: null,
     thinkingLevel: "off",
+    availableThinkingLevels: [],
     isStreaming: false,
     isCompacting: false,
     autoCompactionEnabled: true,
@@ -378,6 +484,11 @@ export const useChatStore = create<PiState>()((set, get) => {
     stats: null,
     activeTools: [],
     liveMessage: null,
+    activeBashOutput: null,
+    editorPrefill: null,
+    extensionStatus: {},
+    extensionWidgets: {},
+    extensionTitle: null,
     extensionUi: null,
     notice: null,
     settings: null,
@@ -403,7 +514,7 @@ export const useChatStore = create<PiState>()((set, get) => {
     },
 
     refreshAll: async () => {
-      const [stateRes, messagesRes, modelsRes, commandsRes, sessionsRes, statsRes, settingsRes, providersRes] = await Promise.all([
+      const [stateRes, messagesRes, modelsRes, commandsRes, sessionsRes, statsRes, settingsRes, providersRes, thinkingRes] = await Promise.all([
         piClient.request("get_state"),
         piClient.request("get_messages"),
         piClient.request("get_available_models"),
@@ -412,6 +523,7 @@ export const useChatStore = create<PiState>()((set, get) => {
         piClient.request("get_session_stats"),
         piClient.request("get_settings"),
         piClient.request("list_providers"),
+        piClient.request("get_available_thinking_levels"),
       ]);
 
       const stateData = (stateRes.data ?? {}) as Record<string, unknown>;
@@ -422,8 +534,10 @@ export const useChatStore = create<PiState>()((set, get) => {
       const statsData = (statsRes.data ?? {}) as Record<string, unknown>;
       const settingsData = (settingsRes.data ?? {}) as Record<string, unknown>;
       const providersData = (providersRes.data ?? {}) as Record<string, unknown>;
+      const thinkingData = (thinkingRes.data ?? {}) as Record<string, unknown>;
 
       const model = stateData.model as PiModel | null;
+      const levels = Array.isArray(thinkingData.levels) ? (thinkingData.levels as string[]) : [];
 
       set({
         sessionId: (stateData.sessionId as string) ?? null,
@@ -431,6 +545,7 @@ export const useChatStore = create<PiState>()((set, get) => {
         sessionName: (stateData.sessionName as string) ?? null,
         model,
         thinkingLevel: (stateData.thinkingLevel as string) ?? "off",
+        availableThinkingLevels: levels,
         isStreaming: Boolean(stateData.isStreaming),
         isCompacting: Boolean(stateData.isCompacting),
         autoCompactionEnabled: Boolean(stateData.autoCompactionEnabled),
@@ -588,6 +703,22 @@ export const useChatStore = create<PiState>()((set, get) => {
       set({ thinkingLevel: level });
     },
 
+    cycleThinkingLevel: async () => {
+      const res = await piClient.request("cycle_thinking_level");
+      if (res.success && res.data) {
+        const level = String((res.data as Record<string, unknown>).level ?? get().thinkingLevel);
+        set({ thinkingLevel: level });
+      }
+    },
+
+    getAvailableThinkingLevels: async () => {
+      const res = await piClient.request("get_available_thinking_levels");
+      if (res.success && res.data) {
+        const levels = (res.data as Record<string, unknown>).levels;
+        set({ availableThinkingLevels: Array.isArray(levels) ? (levels as string[]) : [] });
+      }
+    },
+
     newSession: async () => {
       await piClient.request("new_session");
       set({ messages: [], activeTools: [], liveMessage: null, extensionUi: null });
@@ -711,12 +842,33 @@ export const useChatStore = create<PiState>()((set, get) => {
     },
 
     bash: async (command) => {
+      set({ activeBashOutput: "" });
       const res = await piClient.request("bash", { command }, 300000);
+      set({ activeBashOutput: null });
       if (res.success && res.data) {
         const data = res.data as Record<string, unknown>;
-        return { output: String(data.output ?? ""), exitCode: Number(data.exitCode ?? 0) };
+        return {
+          output: String(data.output ?? ""),
+          exitCode: Number(data.exitCode ?? 0),
+          cancelled: Boolean(data.cancelled),
+          truncated: Boolean(data.truncated),
+          fullOutputPath: data.fullOutputPath != null ? String(data.fullOutputPath) : null,
+        };
       }
       set({ lastError: res.error ?? "bash 执行失败" });
+      return null;
+    },
+
+    abortBash: () => {
+      piClient.send("abort_bash");
+    },
+
+    getLastAssistantText: async () => {
+      const res = await piClient.request("get_last_assistant_text");
+      if (res.success && res.data) {
+        const text = (res.data as Record<string, unknown>).text;
+        return text == null ? null : String(text);
+      }
       return null;
     },
 
@@ -735,6 +887,8 @@ export const useChatStore = create<PiState>()((set, get) => {
     },
 
     clearNotice: () => set({ notice: null }),
+
+    consumeEditorPrefill: () => set({ editorPrefill: null }),
 
     setSidebarOpen: (open) => set({ isSidebarOpen: open }),
     setCommandPaletteOpen: (open) => set({ isCommandPaletteOpen: open }),

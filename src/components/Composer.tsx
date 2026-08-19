@@ -34,6 +34,19 @@ export function Composer() {
   const followUp = useChatStore((s) => s.followUp);
   const abort = useChatStore((s) => s.abort);
   const setModel = useChatStore((s) => s.setModel);
+  const editorPrefill = useChatStore((s) => s.editorPrefill);
+  const consumeEditorPrefill = useChatStore((s) => s.consumeEditorPrefill);
+
+  // 扩展 set_editor_text 预填输入框
+  React.useEffect(() => {
+    if (editorPrefill != null) {
+      setValue(editorPrefill);
+      consumeEditorPrefill();
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
+    }
+  }, [editorPrefill, consumeEditorPrefill]);
 
   const autoResize = () => {
     const el = textareaRef.current;

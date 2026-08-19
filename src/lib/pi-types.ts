@@ -135,6 +135,15 @@ export interface ToolActivity {
   status: "running" | "done";
 }
 
+/** 直接 RPC bash 命令的完整返回结果 */
+export interface BashResult {
+  output: string;
+  exitCode: number;
+  cancelled: boolean;
+  truncated: boolean;
+  fullOutputPath: string | null;
+}
+
 export interface ExtensionUiRequest {
   id: string;
   method: "select" | "confirm" | "input" | "editor" | "notify" | "setStatus" | "setWidget" | "setTitle" | "set_editor_text";

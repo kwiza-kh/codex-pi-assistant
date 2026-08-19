@@ -1,7 +1,8 @@
 import * as React from "react";
 import { useChatStore } from "@/store/chat";
 import { EmptyState } from "@/components/EmptyState";
-import { ActiveToolsCard, MessageBubble, StreamingCursor } from "@/components/MessageBubble";
+import { ActiveToolsCard, MessageBubble } from "@/components/MessageBubble";
+import { LoadingState } from "@/components/LoadingState";
 
 export function ChatView() {
   const messages = useChatStore((s) => s.messages);
@@ -48,7 +49,7 @@ export function ChatView() {
               <MessageBubble message={liveMessage} isLast showTimestamp={false} />
               {isStreaming && (
                 <div className="ml-11 mt-1">
-                  <StreamingCursor />
+                  <LoadingState label="正在生成" />
                 </div>
               )}
               <ActiveToolsCard />

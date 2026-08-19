@@ -45,7 +45,7 @@ export function EmptyState({ onPick }: { onPick: (prompt: string) => void }) {
     <div className="mx-auto flex h-full max-w-2xl flex-col justify-center px-4 py-12">
       <div className="mb-8 text-center">
         <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-          {getGreeting()}，我是 Codex × Pi
+          {getGreeting()}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground sm:text-base">
           由 Pi Agent 驱动，具备 read / write / edit / bash 等完整工具能力。

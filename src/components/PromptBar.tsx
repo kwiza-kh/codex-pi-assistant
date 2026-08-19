@@ -1,0 +1,395 @@
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+
+/* ─────────────────────────────────────────────────────────
+ * PROMPT BAR — 增强输入框
+ * 带真实控件：@ 数据源菜单、/ 命令菜单、模型选择器、
+ * 发送。输入 @ 或 / 打开对应菜单；↑↓ + Enter 选择。
+ * 变体：Rounded（卡片圆角）· Pill（全圆角）。
+ *
+ * 数据由调用方传入：commands（/ 命令）、sources（@ 数据源，
+ * 可选）、models + model + onSelectModel（受控模型选择）。
+ * 不做本地假定时器、假听写、假附件与着色器扫光。
+ * ───────────────────────────────────────────────────────── */
+
+export type PromptBarItem = { key: string; name: string; desc?: string };
+export type PromptBarModel = { key: string; name: string; tag?: string };
+
+function Icon({ children, size = 15, strokeWidth = 1.8 }: { children: React.ReactNode; size?: number; strokeWidth?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {children}
+    </svg>
+  );
+}
+
+/* 当前正在输入的最后一个 @词 或 /词，若有 */
+function parseToken(draft: string): { kind: "at" | "slash"; query: string; start: number } | null {
+  const match = /(^|\s)([@/])([\w-]*)$/.exec(draft);
+  if (!match) return null;
+  return {
+    kind: match[2] === "@" ? "at" : "slash",
+    query: match[3].toLowerCase(),
+    start: match.index + match[1].length,
+  };
+}
+
+export function PromptBar({
+  variant = "Rounded",
+  tall = false,
+  placeholder,
+  models = [],
+  model,
+  onSelectModel,
+  commands = [],
+  sources = [],
+  onSend,
+}: {
+  variant?: "Rounded" | "Pill";
+  /** 多行输入，控件独占一行 */
+  tall?: boolean;
+  placeholder?: string;
+  models?: PromptBarModel[];
+  /** 当前模型；缺省取 models[0] */
+  model?: PromptBarModel;
+  onSelectModel?: (model: PromptBarModel) => void;
+  /** / 命令（name 可含前导斜杠） */
+  commands?: PromptBarItem[];
+  /** @ 数据源；为空时 @ 不弹菜单 */
+  sources?: PromptBarItem[];
+  onSend?: (text: string) => void;
+}) {
+  const pill = variant === "Pill";
+  const currentModel = model ?? models[0] ?? null;
+
+  const [draft, setDraft] = useState("");
+  const [dismissed, setDismissed] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [expanded, setExpanded] = useState(false);
+  const [engaged, setEngaged] = useState(false);
+  const [rowBox, setRowBox] = useState<{ top: number; height: number } | null>(null);
+  const [modelBox, setModelBox] = useState<{ top: number; height: number } | null>(null);
+  const [modelHovered, setModelHovered] = useState<number | null>(null);
+  const [modelMenuLeft, setModelMenuLeft] = useState(0);
+  const [modelMenuBottom, setModelMenuBottom] = useState(0);
+
+  const composerAnchorRef = useRef<HTMLDivElement>(null);
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const measureRef = useRef<HTMLSpanElement>(null);
+  const modelRef = useRef<HTMLButtonElement>(null);
+  const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const modelRowRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const wide = expanded || tall;
+
+  const token = dismissed ? null : parseToken(draft);
+  const menu: "at" | "slash" | null =
+    token?.kind === "slash" && commands.length > 0
+      ? "slash"
+      : token?.kind === "at" && sources.length > 0
+        ? "at"
+        : null;
+  const query = token?.query ?? "";
+
+  const rows: PromptBarItem[] =
+    menu === "at"
+      ? sources.filter((s) => s.name.toLowerCase().includes(query))
+      : menu === "slash"
+        ? commands.filter((c) => c.name.replace(/^\//, "").startsWith(query))
+        : [];
+
+  useEffect(() => {
+    setActive(0);
+    setEngaged(false);
+  }, [menu, query]);
+
+  /* 单个高亮滑片滑到当前行，而不是每行各自切换背景 */
+  useLayoutEffect(() => {
+    const target = rowRefs.current[active];
+    if (target) setRowBox({ top: target.offsetTop, height: target.offsetHeight });
+  }, [menu, query, active, rows.length]);
+
+  /* 模型菜单里同样的滑片高亮，浮到 hover 行，回退到当前选中模型 */
+  const modelIndex = models.findIndex((m) => m.key === currentModel?.key);
+  useLayoutEffect(() => {
+    if (!modelOpen) return;
+    const target = modelRowRefs.current[modelHovered ?? modelIndex];
+    if (target) setModelBox({ top: target.offsetTop, height: target.offsetHeight });
+  }, [modelOpen, modelHovered, modelIndex]);
+
+  /* 菜单在裁剪框外，通过测量对齐到模型触发器，而不是钉死在右边缘 */
+  useLayoutEffect(() => {
+    if (!modelOpen || !composerAnchorRef.current || !modelRef.current) return;
+    const anchorRect = composerAnchorRef.current.getBoundingClientRect();
+    const triggerRect = modelRef.current.getBoundingClientRect();
+    setModelMenuLeft(Math.max(0, Math.min(triggerRect.left - anchorRect.left, anchorRect.width - 176)));
+    setModelMenuBottom(anchorRect.bottom - triggerRect.top + 8);
+  }, [modelOpen, wide, currentModel?.name]);
+
+  useEffect(() => {
+    if (!modelOpen) setModelHovered(null);
+  }, [modelOpen]);
+
+  /* 换行文本上移到控件上方，随后增长到紧凑上限 */
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    const controls = controlsRef.current;
+    const measure = measureRef.current;
+    const modelButton = modelRef.current;
+    if (!input || !controls || !measure || !modelButton) return;
+
+    const fixedControlsWidth = 28 + modelButton.offsetWidth;
+    const inlineGaps = 4 * 3;
+    const inlineInputWidth = controls.clientWidth - fixedControlsWidth - inlineGaps;
+    const needsFullWidth = draft.includes("\n") || measure.offsetWidth + 8 > inlineInputWidth;
+    if (needsFullWidth !== expanded) {
+      setExpanded(needsFullWidth);
+    }
+
+    const minHeight = 28;
+    const maxHeight = 100;
+    input.style.height = "0px";
+    const contentHeight = input.scrollHeight;
+    input.style.height = `${Math.min(Math.max(contentHeight, minHeight), maxHeight)}px`;
+    input.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
+  }, [draft, expanded]);
+
+  /* 点击输入框外部关闭已打开的菜单 */
+  useEffect(() => {
+    if (!modelOpen) return;
+    const close = (event: PointerEvent) => {
+      if (!(event.target as Element).closest("[data-promptbar]")) {
+        setModelOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, [modelOpen]);
+
+  const closeMenus = () => {
+    setModelOpen(false);
+  };
+
+  const pick = (row: { key: string; name: string }) => {
+    if (menu === "at") {
+      setDraft(`${token ? draft.slice(0, token.start) : draft}@${row.name} `);
+    } else {
+      setDraft(`${token ? draft.slice(0, token.start) : draft}${row.name} `);
+    }
+    setDismissed(false);
+    inputRef.current?.focus();
+  };
+
+  const selectModel = (next: PromptBarModel) => {
+    onSelectModel?.(next);
+    setModelOpen(false);
+    inputRef.current?.focus();
+  };
+
+  const canSend = draft.trim().length > 0;
+  const send = () => {
+    if (!canSend) return;
+    onSend?.(draft.trim());
+    setDraft("");
+    closeMenus();
+  };
+
+  return (
+    <div data-promptbar className="w-full">
+      {/* composer 是锚点——菜单从它的顶边向上弹出 */}
+      <div ref={composerAnchorRef} className="relative">
+        {/* ── @ / slash 菜单 ─────────────────────────────── */}
+        {menu && (
+          <div
+            onMouseLeave={() => setEngaged(false)}
+            className="absolute inset-x-0 bottom-full z-10 mb-2 rounded-[10px] bg-surface p-1 shadow-raised"
+            style={{ animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom center" }}
+          >
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-x-1 rounded-[6px] bg-hover"
+              style={{
+                top: rowBox?.top ?? 0,
+                height: rowBox?.height ?? 0,
+                opacity: rowBox && engaged && rows.length > 0 ? 1 : 0,
+                transition:
+                  "top 220ms cubic-bezier(0.23,1,0.32,1), height 220ms cubic-bezier(0.23,1,0.32,1), opacity 150ms ease",
+              }}
+            />
+            {rows.map((row, i) => (
+              <button
+                key={row.key}
+                type="button"
+                ref={(el) => {
+                  rowRefs.current[i] = el;
+                }}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => {
+                  setActive(i);
+                  setEngaged(true);
+                }}
+                onClick={() => pick(row)}
+                className="relative z-10 flex h-9 w-full items-center gap-2.5 rounded-[6px] px-2 text-left"
+              >
+                <span className="shrink-0 text-[12.5px] font-medium text-ink">
+                  {row.name}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3">{row.desc}</span>
+              </button>
+            ))}
+            {rows.length === 0 && (
+              <div className="flex h-9 items-center px-2 text-[12px] text-ink-3">
+                没有匹配「{query}」
+              </div>
+            )}
+            <div className="mt-1 border-t border-line px-2 pt-1.5 pb-1 text-[11px] text-ink-3">
+              {menu === "at" ? "输入以搜索数据源与文件" : "输入以搜索命令"}
+            </div>
+          </div>
+        )}
+
+        {/* ── 模型菜单 ─────────────────────────────────── */}
+        {modelOpen && (
+          <div
+            onMouseLeave={() => setModelHovered(null)}
+            className="absolute z-10 w-44 rounded-[10px] bg-surface p-1 shadow-raised"
+            style={{ left: modelMenuLeft, bottom: modelMenuBottom, animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom left" }}
+          >
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-x-1 rounded-[6px] bg-hover"
+              style={{
+                top: modelBox?.top ?? 0,
+                height: modelBox?.height ?? 0,
+                opacity: modelBox && modelHovered !== null ? 1 : 0,
+                transition:
+                  "top 220ms cubic-bezier(0.23,1,0.32,1), height 220ms cubic-bezier(0.23,1,0.32,1), opacity 150ms ease",
+              }}
+            />
+            {models.map((m, i) => (
+              <button
+                key={m.key}
+                type="button"
+                ref={(el) => {
+                  modelRowRefs.current[i] = el;
+                }}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setModelHovered(i)}
+                onClick={() => selectModel(m)}
+                className="relative z-10 flex h-[30px] w-full items-center gap-2 rounded-[6px] px-2 text-left"
+              >
+                <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{m.name}</span>
+                {m.tag && <span className="shrink-0 text-[11px] text-ink-3">{m.tag}</span>}
+                <span className={`shrink-0 text-ink ${m.key === currentModel?.key ? "" : "invisible"}`}>
+                  <Icon size={13} strokeWidth={2.5}><path d="M20 6L9 17l-5-5" /></Icon>
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* ── 输入框 ───────────────────────────────────── */}
+        <div
+          className={`relative isolate flex flex-col overflow-hidden border border-line bg-surface shadow-card transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${
+            tall ? "gap-2.5 p-3.5" : "gap-1.5 p-1.5"
+          } ${
+            pill ? (wide ? "rounded-[24px]" : "rounded-full") : tall ? "rounded-[22px]" : "rounded-[14px]"
+          }`}
+        >
+          <span
+            ref={measureRef}
+            aria-hidden="true"
+            className="pointer-events-none absolute invisible whitespace-pre text-[13px] leading-[18px]"
+          >
+            {draft}
+          </span>
+
+          <div
+            ref={controlsRef}
+            className={`grid items-end gap-x-1 gap-y-1.5 ${
+              wide
+                ? "grid-cols-[auto_minmax(0,1fr)_28px]"
+                : "grid-cols-[minmax(0,1fr)_auto_28px]"
+            }`}
+          >
+            <textarea
+              ref={inputRef}
+              rows={1}
+              value={draft}
+              onChange={(event) => {
+                setDraft(event.target.value);
+                setDismissed(false);
+              }}
+              onKeyDown={(event) => {
+                if (menu && rows.length > 0) {
+                  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                    event.preventDefault();
+                    setEngaged(true);
+                    setActive((current) => (current + (event.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length);
+                    return;
+                  }
+                  if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+                    event.preventDefault();
+                    pick(rows[active]);
+                    return;
+                  }
+                }
+                if (event.key === "Escape") {
+                  setDismissed(true);
+                  closeMenus();
+                  return;
+                }
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  send();
+                }
+              }}
+              placeholder={placeholder ?? "发消息…"}
+              aria-label="消息输入"
+              className={`${tall ? "min-h-[68px] px-2 py-2 text-[14px] leading-5" : "min-h-7 px-1 py-[5px] text-[13px] leading-[18px]"} min-w-0 w-full resize-none bg-transparent text-ink outline-none [overflow-wrap:anywhere] placeholder:text-ink-3 ${
+                wide ? "col-span-full col-start-1 row-start-1" : "col-start-1 row-start-1"
+              }`}
+            />
+
+            {/* 模型选择器 */}
+            {models.length > 0 && (
+              <button
+                ref={modelRef}
+                type="button"
+                aria-expanded={modelOpen}
+                aria-label="选择模型"
+                onClick={() => setModelOpen((current) => !current)}
+                className={`flex h-7 shrink-0 items-center gap-1 px-1.5 text-[12px] font-medium text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink ${
+                  pill ? "rounded-full" : "rounded-[8px]"
+                } ${wide ? "col-start-1 row-start-2 justify-self-start" : "col-start-2 row-start-1"}`}
+              >
+                {currentModel?.name ?? "选择模型"}
+                <span className="text-ink-3">
+                  <Icon size={11} strokeWidth={2.4}><path d="M6 9l6 6 6-6" /></Icon>
+                </span>
+              </button>
+            )}
+
+            {/* 发送 */}
+            <button
+              type="button"
+              aria-label="发送"
+              disabled={!canSend}
+              onClick={send}
+              className={`flex size-7 shrink-0 items-center justify-center transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${
+                pill ? "rounded-full" : "rounded-[8px]"
+              } ${wide ? "col-start-3 row-start-2" : "col-start-3 row-start-1"}`}
+              style={{
+                background: canSend ? "var(--ink)" : "var(--line-strong)",
+                color: canSend ? "var(--surface)" : "var(--ink-2)",
+              }}
+            >
+              <Icon size={16} strokeWidth={2.4}><path d="M12 19V5M5 12l7-7 7 7" /></Icon>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

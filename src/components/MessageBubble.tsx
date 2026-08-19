@@ -5,7 +5,6 @@ import {
   ChevronRight,
   Copy,
   RefreshCw,
-  Sparkles,
   TerminalSquare,
   ThumbsDown,
   ThumbsUp,
@@ -13,9 +12,10 @@ import {
 } from "lucide-react";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { useChatStore, toolArgsToPrettyString } from "@/store/chat";
-import type { UIMessage } from "@/lib/pi-types";
+import type { ToolActivity, UIMessage } from "@/lib/pi-types";
 import { Markdown } from "@/components/Markdown";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { StreamingText } from "@/components/StreamingText";
+import { ThinkingState, type ThinkingRow } from "@/components/ThinkingState";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 function ActionButton({
@@ -89,12 +89,9 @@ function ToolCallBlock({ block }: { block: { type: "toolCall"; id: string; name:
   );
 }
 
-function ThinkingBlock({ thinking }: { thinking: string }) {
-  return (
-    <CollapsibleCard icon={<Sparkles className="h-3.5 w-3.5" />} title="思考过程">
-      <div className="whitespace-pre-wrap text-xs leading-6 text-muted-foreground">{thinking}</div>
-    </CollapsibleCard>
-  );
+function ThinkingTrace({ thinking, streaming }: { thinking: string; streaming: boolean }) {
+  const rows: ThinkingRow[] = thinking.trim() ? [{ primary: thinking.trim() }] : [];
+  return <ThinkingState variant="Reasoning" active={streaming} rows={rows} />;
 }
 
 function ToolResultCard({ message }: { message: UIMessage }) {
@@ -139,6 +136,7 @@ interface MessageBubbleProps {
 export function MessageBubble({ message, isLast, showTimestamp = true, onRegenerate }: MessageBubbleProps) {
   const [copied, setCopied] = React.useState(false);
   const [liked, setLiked] = React.useState<"up" | "down" | null>(null);
+  const isStreaming = useChatStore((s) => s.isStreaming);
   const isUser = message.role === "user";
   const isToolResult = message.role === "toolResult";
   const isBashExecution = message.role === "bashExecution";
@@ -166,9 +164,6 @@ export function MessageBubble({ message, isLast, showTimestamp = true, onRegener
             </span>
           )}
         </div>
-        <Avatar className="h-8 w-8 border-0 bg-ink text-page shadow-btn">
-          <AvatarFallback className="bg-ink text-xs font-semibold text-page">我</AvatarFallback>
-        </Avatar>
       </div>
     );
   }
@@ -205,35 +200,25 @@ export function MessageBubble({ message, isLast, showTimestamp = true, onRegener
   }
 
   // assistant
-  const modelLabel = message.model ? `${message.provider ?? ""}/${message.model}`.replace(/^\/+/, "") : undefined;
+  const textIndexes = message.blocks.map((b, i) => (b.type === "text" ? i : -1)).filter((i) => i >= 0);
+  const lastTextIndex = textIndexes.length ? textIndexes[textIndexes.length - 1] : -1;
   return (
     <div className="group flex gap-3 animate-fade-in">
-      <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-control bg-ink text-page shadow-btn">
-        <Sparkles className="h-4 w-4" />
-      </div>
       <div className="min-w-0 flex-1">
-        <div className="mb-1.5 flex items-center gap-2">
-          <span className="text-sm font-semibold">Codex</span>
-          {modelLabel && (
-            <span className="rounded-chip bg-field px-2 py-0.5 text-[11px] font-medium text-ink-2 shadow-btn">
-              {modelLabel}
-            </span>
-          )}
-          {showTimestamp && message.timestamp && (
-            <span className="text-[11px] text-ink-3">{formatRelativeTime(message.timestamp)}</span>
-          )}
-        </div>
-
         {message.blocks.length === 0 && message.text ? (
           <Markdown content={message.text} />
         ) : (
           <div className="space-y-1">
             {message.blocks.map((block, i) => {
               if (block.type === "text") {
-                return block.text ? <Markdown key={i} content={block.text} /> : null;
+                if (!block.text) return null;
+                if (isLast && isStreaming && i === lastTextIndex) {
+                  return <StreamingText key={i} content={block.text} streaming />;
+                }
+                return <Markdown key={i} content={block.text} />;
               }
               if (block.type === "thinking") {
-                return <ThinkingBlock key={i} thinking={block.thinking} />;
+                return <ThinkingTrace key={i} thinking={block.thinking} streaming={isLast && isStreaming} />;
               }
               if (block.type === "toolCall") {
                 return <ToolCallBlock key={i} block={block} />;
@@ -265,51 +250,81 @@ export function MessageBubble({ message, isLast, showTimestamp = true, onRegener
             </ActionButton>
           </div>
         )}
+
+        {showTimestamp && message.timestamp && (
+          <div className="mt-1.5 text-[11px] text-ink-3">{formatRelativeTime(message.timestamp)}</div>
+        )}
       </div>
     </div>
   );
 }
 
-/** 流式生成中的活跃工具卡片（放在 live message 下方） */
+/** 流式生成中的活跃工具轨迹（放在 live message 下方，Coding 变体） */
+const TOOL_LABELS: Record<string, string> = {
+  read: "Read",
+  write: "Write",
+  edit: "Edit",
+  bash: "Run",
+  grep: "Search",
+  glob: "Find",
+  list: "List",
+  fetch: "Fetch",
+};
+
+function toolLabel(name: string): string {
+  return TOOL_LABELS[name] ?? name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function toolSecondary(name: string, args: Record<string, unknown>): string | undefined {
+  const a = args ?? {};
+  const pick = (...keys: string[]) => {
+    for (const k of keys) {
+      const v = a[k];
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+    return undefined;
+  };
+  if (["read", "write", "edit", "list"].includes(name)) {
+    return pick("path", "file_path", "filePath", "file");
+  }
+  if (name === "bash") return pick("command", "cmd", "code");
+  if (name === "grep") {
+    const pattern = pick("pattern", "regex", "query");
+    const path = pick("path", "dir", "file");
+    return [pattern, path].filter(Boolean).join(" · ");
+  }
+  if (name === "glob") return pick("pattern", "path");
+  if (name === "fetch") return pick("url", "uri");
+  for (const v of Object.values(a)) {
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
+function toolRowFromActivity(t: ToolActivity): ThinkingRow {
+  return {
+    primary: toolLabel(t.toolName),
+    secondary: toolSecondary(t.toolName, t.args),
+    mono: true,
+    output: t.output || undefined,
+  };
+}
+
 export function ActiveToolsCard() {
   const activeTools = useChatStore((s) => s.activeTools);
   if (activeTools.length === 0) return null;
+  const active = activeTools.some((t) => t.status === "running");
   return (
-    <div className="ml-11 space-y-2">
-      {activeTools.map((t) => (
-        <div key={t.toolCallId} className="rounded-xl border bg-inset px-3 py-2 text-xs">
-          <div className="flex items-center gap-2 font-medium">
-            <Wrench className="h-3.5 w-3.5 text-muted-foreground" />
-            <span>{t.toolName}</span>
-            {t.status === "running" ? (
-              <span className="inline-flex items-center gap-1 text-muted-foreground">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
-                执行中
-              </span>
-            ) : (
-              <span className={t.isError ? "text-destructive" : "text-emerald-500"}>
-                {t.isError ? "失败" : "完成"}
-              </span>
-            )}
-          </div>
-          {t.output && (
-            <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-5 text-muted-foreground">
-              {t.output}
-            </pre>
-          )}
-        </div>
-      ))}
+    <div className="ml-11 mt-2">
+      <ThinkingState
+        variant="Coding"
+        active={active}
+        rows={activeTools.map(toolRowFromActivity)}
+        defaultExpanded
+        activeLabel="运行工具中"
+        doneLabel="工具运行完成"
+      />
     </div>
-  );
-}
-
-/** 流式光标 */
-export function StreamingCursor() {
-  return (
-    <span
-      className="ml-0.5 inline-block h-4 w-2 animate-blink rounded-[1px] bg-foreground align-middle"
-      aria-label="正在生成"
-    />
   );
 }
 

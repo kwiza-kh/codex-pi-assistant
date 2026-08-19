@@ -235,7 +235,9 @@ export function SettingsDialog() {
   const setModelDialogOpen = useChatStore((s) => s.setModelDialogOpen);
   const model = useChatStore((s) => s.model);
   const thinkingLevel = useChatStore((s) => s.thinkingLevel);
+  const availableThinkingLevels = useChatStore((s) => s.availableThinkingLevels);
   const setThinkingLevel = useChatStore((s) => s.setThinkingLevel);
+  const cycleThinkingLevel = useChatStore((s) => s.cycleThinkingLevel);
   const autoCompactionEnabled = useChatStore((s) => s.autoCompactionEnabled);
   const setAutoCompaction = useChatStore((s) => s.setAutoCompaction);
   const steeringMode = useChatStore((s) => s.steeringMode);
@@ -325,7 +327,18 @@ export function SettingsDialog() {
                 <Separator />
 
                 <SettingRow title="思考等级" description="对支持 reasoning 的模型即时生效">
-                  <ModeSelector value={thinkingLevel} options={THINKING_LEVELS} onSelect={setThinkingLevel} />
+                  <div className="flex w-full items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <ModeSelector
+                        value={thinkingLevel}
+                        options={availableThinkingLevels.length > 0 ? availableThinkingLevels : THINKING_LEVELS}
+                        onSelect={setThinkingLevel}
+                      />
+                    </div>
+                    <Button size="sm" variant="outline" className="h-8 shrink-0" onClick={() => cycleThinkingLevel()} aria-label="循环切换思考等级">
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
                 </SettingRow>
                 <Separator />
 

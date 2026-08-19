@@ -1,5 +1,6 @@
 import * as React from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useChatStore } from "@/store/chat";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatHeader } from "@/components/ChatHeader";
@@ -51,6 +52,21 @@ export default function App() {
   const setCommandPaletteOpen = useChatStore((s) => s.setCommandPaletteOpen);
   const notice = useChatStore((s) => s.notice);
   const clearNotice = useChatStore((s) => s.clearNotice);
+  const extensionTitle = useChatStore((s) => s.extensionTitle);
+  const extensionStatus = useChatStore((s) => s.extensionStatus);
+  const extensionWidgets = useChatStore((s) => s.extensionWidgets);
+
+  // 扩展 setTitle：更新 document.title + Tauri 窗口标题
+  React.useEffect(() => {
+    document.title = extensionTitle ? `${extensionTitle} · Pi Assistant` : "Pi Assistant";
+    if (isTauriRuntime()) {
+      getCurrentWindow().setTitle(extensionTitle ?? "Pi Assistant").catch(() => {});
+    }
+  }, [extensionTitle]);
+
+  const aboveWidgets = Object.entries(extensionWidgets).filter(([, w]) => w.placement === "aboveEditor");
+  const belowWidgets = Object.entries(extensionWidgets).filter(([, w]) => w.placement === "belowEditor");
+  const statusEntries = Object.entries(extensionStatus);
 
   React.useEffect(() => {
     applyTheme(settingsTheme);
@@ -106,8 +122,25 @@ export default function App() {
               </button>
             </div>
           )}
+          {aboveWidgets.map(([key, w]) => (
+            <div key={key} className="border-b bg-inset px-4 py-2 font-mono text-xs whitespace-pre-wrap text-ink-2">
+              {w.lines.join("\n")}
+            </div>
+          ))}
           <ChatView />
+          {belowWidgets.map(([key, w]) => (
+            <div key={key} className="border-b bg-inset px-4 py-2 font-mono text-xs whitespace-pre-wrap text-ink-2">
+              {w.lines.join("\n")}
+            </div>
+          ))}
           <Composer />
+          {statusEntries.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t bg-inset px-4 py-1.5 text-xs text-ink-2">
+              {statusEntries.map(([key, text]) => (
+                <span key={key}>{text}</span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
       <CommandPalette />
