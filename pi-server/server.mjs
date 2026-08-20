@@ -20,7 +20,7 @@ import { homedir } from "node:os";
 import { join, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8787);
@@ -30,6 +30,9 @@ const SETTINGS_FILE = process.env.PI_SETTINGS_FILE || join(AGENT_DIR, "settings.
 const AUTH_FILE = process.env.PI_AUTH_FILE || join(AGENT_DIR, "auth.json");
 const MODELS_FILE = process.env.PI_MODELS_FILE || join(AGENT_DIR, "models.json");
 const MODELS_STORE_FILE = process.env.PI_MODELS_STORE_FILE || join(AGENT_DIR, "models-store.json");
+
+// 项目信任存储（~/.pi/agent/trust.json）
+const trustStore = new ProjectTrustStore(AGENT_DIR);
 
 // ---------------------------------------------------------------------------
 // 定位 pi CLI
@@ -235,6 +238,75 @@ function deleteSession(sessionPath) {
     // 忽略目录清理失败
   }
   return { path: target };
+}
+
+// ---------------------------------------------------------------------------
+// 项目上下文文件（AGENTS.md / CLAUDE.md）读写
+// ---------------------------------------------------------------------------
+
+const CONTEXT_FILE_CANDIDATES = ["AGENTS.override.md", "AGENTS.md", "CLAUDE.md"];
+
+function findContextFile(cwd) {
+  // 优先在工作目录查找；找不到则回退到全局 ~/.pi/agent/AGENTS.md
+  const globalFile = join(AGENT_DIR, "AGENTS.md");
+  const dir = resolve(cwd || process.cwd());
+  for (const name of CONTEXT_FILE_CANDIDATES) {
+    const p = join(dir, name);
+    if (existsSync(p)) return p;
+  }
+  return globalFile;
+}
+
+function readContextFile(cwd) {
+  const path = findContextFile(cwd);
+  if (!existsSync(path)) return { path, content: "" };
+  try {
+    return { path, content: readFileSync(path, "utf8") };
+  } catch (err) {
+    return { path, content: "", error: err.message };
+  }
+}
+
+function writeContextFile(cwd, content) {
+  const path = findContextFile(cwd);
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(path, String(content ?? ""), "utf8");
+  return { path };
+}
+
+const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", "target", ".next", ".turbo", "venv", "__pycache__", ".venv"]);
+const MAX_WORKSPACE_FILES = 500;
+
+function listWorkspaceFiles() {
+  const root = childCwd;
+  const files = [];
+  function walk(dir, depth) {
+    if (files.length >= MAX_WORKSPACE_FILES || depth > 6) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      if (files.length >= MAX_WORKSPACE_FILES) return;
+      if (ent.name.startsWith(".")) continue;
+      const full = join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (IGNORED_DIRS.has(ent.name)) continue;
+        walk(full, depth + 1);
+      } else if (ent.isFile()) {
+        files.push(full);
+      }
+    }
+  }
+  walk(root, 0);
+  // 返回相对工作目录的路径
+  return files.map((f) => {
+    const rel = f.startsWith(root + sep) ? f.slice(root.length + 1) : f;
+    return rel.split(sep).join("/");
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +546,7 @@ function sendToAll(obj) {
 }
 
 // 服务端命令
-const SERVER_COMMANDS = new Set(["ping", "list_sessions", "delete_session", "restart", "get_cwd", "get_server_info", "get_settings", "set_settings", "list_providers", "get_provider_auth", "set_provider_api_key", "remove_provider_api_key", "get_models", "refresh_models"]);
+const SERVER_COMMANDS = new Set(["ping", "list_sessions", "delete_session", "restart", "get_cwd", "get_server_info", "get_settings", "set_settings", "list_providers", "get_provider_auth", "set_provider_api_key", "remove_provider_api_key", "get_models", "refresh_models", "get_context_file", "set_context_file", "list_workspace_files", "get_project_trust", "set_project_trust"]);
 
 async function handleServerCommand(msg) {
   switch (msg.type) {
@@ -497,6 +569,39 @@ async function handleServerCommand(msg) {
       };
     case "get_settings":
       return { type: "response", id: msg.id, command: "get_settings", success: true, data: { path: SETTINGS_FILE, settings: readSettings() } };
+    case "get_context_file":
+      return { type: "response", id: msg.id, command: "get_context_file", success: true, data: readContextFile(msg.cwd ?? childCwd) };
+    case "set_context_file":
+      try {
+        const info = writeContextFile(msg.cwd ?? childCwd, msg.content);
+        return { type: "response", id: msg.id, command: "set_context_file", success: true, data: info };
+      } catch (err) {
+        return { type: "response", id: msg.id, command: "set_context_file", success: false, error: err.message };
+      }
+    case "list_workspace_files": {
+      try {
+        const files = listWorkspaceFiles();
+        return { type: "response", id: msg.id, command: "list_workspace_files", success: true, data: { files } };
+      } catch (err) {
+        return { type: "response", id: msg.id, command: "list_workspace_files", success: false, error: err.message };
+      }
+    }
+    case "get_project_trust":
+      return {
+        type: "response", id: msg.id, command: "get_project_trust", success: true,
+        data: { cwd: childCwd, decision: trustStore.get(childCwd) },
+      };
+    case "set_project_trust": {
+      const decision = msg.decision;
+      if (decision !== true && decision !== false && decision !== null) {
+        return { type: "response", id: msg.id, command: "set_project_trust", success: false, error: "decision 必须是 true/false/null" };
+      }
+      trustStore.set(childCwd, decision);
+      return {
+        type: "response", id: msg.id, command: "set_project_trust", success: true,
+        data: { cwd: childCwd, decision: trustStore.get(childCwd) },
+      };
+    }
     case "set_settings": {
       const patch = msg.settings ?? {};
       const current = readSettings();

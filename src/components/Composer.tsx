@@ -9,9 +9,11 @@ import {
   Mic,
   Plus,
   Square,
+  X,
 } from "lucide-react";
 import { useChatStore } from "@/store/chat";
 import { cn } from "@/lib/utils";
+import type { PiImage } from "@/lib/pi-types";
 
 /* ─────────────────────────────────────────────────────────
  * COMPOSER — 底部输入框
@@ -22,12 +24,12 @@ import { cn } from "@/lib/utils";
 
 type CommandItem = { key: string; name: string; desc?: string };
 
-/* 当前正在输入的最后一个 /词，若有 */
-function parseToken(draft: string): { kind: "slash"; query: string; start: number } | null {
-  const match = /(^|\s)(\/)([\w-]*)$/.exec(draft);
+/* 当前正在输入的最后一个 @词 或 /词，若有 */
+function parseToken(draft: string): { kind: "at" | "slash"; query: string; start: number } | null {
+  const match = /(^|\s)([@/])([\w./-]*)$/.exec(draft);
   if (!match) return null;
   return {
-    kind: "slash",
+    kind: match[2] === "@" ? "at" : "slash",
     query: match[3].toLowerCase(),
     start: match.index + match[1].length,
   };
@@ -46,8 +48,10 @@ export function Composer() {
   const [modelHovered, setModelHovered] = React.useState<number | null>(null);
   const [modelMenuLeft, setModelMenuLeft] = React.useState(0);
   const [modelMenuBottom, setModelMenuBottom] = React.useState(0);
+  const [attachments, setAttachments] = React.useState<PiImage[]>([]);
 
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
   const composerAnchorRef = React.useRef<HTMLDivElement>(null);
   const controlsRef = React.useRef<HTMLDivElement>(null);
   const measureRef = React.useRef<HTMLSpanElement>(null);
@@ -68,6 +72,9 @@ export function Composer() {
   const setModel = useChatStore((s) => s.setModel);
   const editorPrefill = useChatStore((s) => s.editorPrefill);
   const consumeEditorPrefill = useChatStore((s) => s.consumeEditorPrefill);
+  const listWorkspaceFiles = useChatStore((s) => s.listWorkspaceFiles);
+
+  const [workspaceFiles, setWorkspaceFiles] = React.useState<string[]>([]);
 
   const modelItems = models.map((m) => ({
     key: `${m.provider}/${m.id}`,
@@ -96,10 +103,23 @@ export function Composer() {
   }, [editorPrefill, consumeEditorPrefill]);
 
   const token = dismissed ? null : parseToken(value);
-  const menu: "slash" | null = token?.kind === "slash" && commandItems.length > 0 ? "slash" : null;
+  const menu: "at" | "slash" | null =
+    token?.kind === "slash" && commandItems.length > 0 ? "slash" : token?.kind === "at" ? "at" : null;
   const query = token?.query ?? "";
   const rows: CommandItem[] =
-    menu === "slash" ? commandItems.filter((c) => c.name.replace(/^\//, "").startsWith(query)) : [];
+    menu === "slash"
+      ? commandItems.filter((c) => c.name.replace(/^\//, "").startsWith(query))
+      : menu === "at"
+        ? workspaceFiles
+            .filter((f) => f.toLowerCase().includes(query))
+            .slice(0, 20)
+            .map((f) => ({ key: f, name: f }))
+        : [];
+
+  // 打开 @ 菜单时加载工作目录文件列表
+  React.useEffect(() => {
+    if (menu === "at") void listWorkspaceFiles().then(setWorkspaceFiles);
+  }, [menu, listWorkspaceFiles]);
 
   const wide = expanded;
 
@@ -176,18 +196,41 @@ export function Composer() {
   };
 
   const pick = (row: CommandItem) => {
-    setValue(`${token ? value.slice(0, token.start) : value}${row.name} `);
+    if (menu === "at") {
+      setValue(`${token ? value.slice(0, token.start) : value}@${row.name} `);
+    } else {
+      setValue(`${token ? value.slice(0, token.start) : value}${row.name} `);
+    }
     setDismissed(false);
     textareaRef.current?.focus();
   };
 
   const doSend = async () => {
     const text = value.trim();
-    if (!text) return;
-    if (isStreaming) await steer(text);
-    else await sendPrompt(text);
+    if (!text && attachments.length === 0) return;
+    const images = attachments.length > 0 ? attachments : undefined;
+    if (isStreaming) await steer(text, images);
+    else await sendPrompt(text, { images });
     setValue("");
+    setAttachments([]);
     requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  // 读取图片为 base64（Pi ImageContent 格式）
+  const addImages = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const next: PiImage[] = [];
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith("image/")) continue;
+      const data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      next.push({ type: "image", data, mimeType: file.type });
+    }
+    if (next.length > 0) setAttachments((cur) => [...cur, ...next]);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -215,7 +258,7 @@ export function Composer() {
     }
   };
 
-  const canSend = value.trim().length > 0;
+  const canSend = value.trim().length > 0 || attachments.length > 0;
   const pendingCount = queue.steering.length + queue.followUp.length;
 
   return (
@@ -256,7 +299,7 @@ export function Composer() {
                 className="relative z-10 flex h-9 w-full items-center gap-2.5 rounded-[6px] px-2 text-left"
               >
                 <span className="flex size-[22px] shrink-0 items-center justify-center text-ink-2">
-                  <ListChecks size={15} />
+                  {menu === "at" ? <FileText size={15} /> : <ListChecks size={15} />}
                 </span>
                 <span className="shrink-0 text-[12.5px] font-medium text-ink">{row.name}</span>
                 <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3">{row.desc}</span>
@@ -265,7 +308,9 @@ export function Composer() {
             {rows.length === 0 && (
               <div className="flex h-9 items-center px-2 text-[12px] text-ink-3">没有匹配「{query}」</div>
             )}
-            <div className="mt-1 border-t border-line px-2 pt-1.5 pb-1 text-[11px] text-ink-3">输入以搜索命令</div>
+            <div className="mt-1 border-t border-line px-2 pt-1.5 pb-1 text-[11px] text-ink-3">
+              {menu === "at" ? "输入以搜索工作目录文件" : "输入以搜索命令"}
+            </div>
           </div>
         )}
 
@@ -325,14 +370,16 @@ export function Composer() {
             <div className="flex h-7 items-center px-2 text-[11px] font-medium text-ink-3">添加附件</div>
             <button
               type="button"
-              disabled
-              className="relative z-10 flex h-9 w-full items-center gap-2.5 rounded-[6px] px-2 text-left opacity-60"
+              onClick={() => {
+                setPlusOpen(false);
+                fileInputRef.current?.click();
+              }}
+              className="relative z-10 flex h-9 w-full items-center gap-2.5 rounded-[6px] px-2 text-left transition-colors duration-100 hover:bg-hover"
             >
               <span className="flex size-[22px] shrink-0 items-center justify-center text-ink-2">
                 <ImageIcon size={15} />
               </span>
               <span className="text-[12.5px] font-medium text-ink">上传图片</span>
-              <span className="ml-auto text-[11px] text-ink-3">待接入</span>
             </button>
             <button
               type="button"
@@ -345,6 +392,17 @@ export function Composer() {
               <span className="text-[12.5px] font-medium text-ink">上传文件</span>
               <span className="ml-auto text-[11px] text-ink-3">待接入</span>
             </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                void addImages(e.target.files);
+                e.target.value = "";
+              }}
+            />
           </div>
         )}
 
@@ -357,6 +415,32 @@ export function Composer() {
           >
             {value}
           </span>
+
+          {/* 附件预览 */}
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 px-0.5 pt-0.5">
+              {attachments.map((img, i) => (
+                <span
+                  key={`${img.mimeType}-${i}`}
+                  className="relative h-14 w-14 overflow-hidden rounded-[8px] border border-line bg-inset"
+                >
+                  <img
+                    src={`data:${img.mimeType};base64,${img.data}`}
+                    alt=""
+                    className="h-full w-full object-cover"
+                  />
+                  <button
+                    type="button"
+                    aria-label="移除图片"
+                    onClick={() => setAttachments((cur) => cur.filter((_, j) => j !== i))}
+                    className="absolute right-0.5 top-0.5 flex size-4 items-center justify-center rounded-full bg-ink/70 text-surface transition-colors hover:bg-ink"
+                  >
+                    <X size={10} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
 
           <div
             ref={controlsRef}
@@ -397,7 +481,7 @@ export function Composer() {
                 setPlusOpen(false);
               }}
               onKeyDown={onKeyDown}
-              placeholder={isStreaming ? "向运行中的 Pi 发送 steering 消息…" : "给 Pi 发送消息，或输入 / 使用命令…"}
+              placeholder={isStreaming ? "向运行中的 Pi 发送 steering 消息…" : "给 Pi 发送消息，输入 / 用命令、@ 引用文件…"}
               aria-label="消息输入"
               className={cn(
                 "min-h-7 min-w-0 w-full resize-none bg-transparent px-1 py-[5px] text-[13px] leading-[18px] text-ink outline-none [overflow-wrap:anywhere] placeholder:text-ink-3",

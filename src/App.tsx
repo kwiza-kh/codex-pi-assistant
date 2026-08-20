@@ -6,10 +6,12 @@ import { Sidebar } from "@/components/Sidebar";
 import { ChatHeader } from "@/components/ChatHeader";
 import { ChatView } from "@/components/ChatView";
 import { Composer } from "@/components/Composer";
+import { BashTerminal } from "@/components/BashTerminal";
 import { CommandPalette } from "@/components/CommandPalette";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { ExtensionUiDialog } from "@/components/ExtensionUiDialog";
 import { ModelProviderDialog } from "@/components/ModelProviderDialog";
+import { SessionTreeDialog } from "@/components/SessionTreeDialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 function applyTheme(theme: "light" | "dark" | "system") {
@@ -128,6 +130,7 @@ export default function App() {
             </div>
           ))}
           <ChatView />
+          <BashTerminal />
           {belowWidgets.map(([key, w]) => (
             <div key={key} className="border-b bg-inset px-4 py-2 font-mono text-xs whitespace-pre-wrap text-ink-2">
               {w.lines.join("\n")}
@@ -147,6 +150,7 @@ export default function App() {
       <SettingsDialog />
       <ExtensionUiDialog />
       <ModelProviderDialog />
+      <SessionTreeDialog />
     </TooltipProvider>
   );
 }

@@ -8,6 +8,7 @@ import {
   type ExtensionUiRequest,
   type PiCatalogModel,
   type PiCommand,
+  type PiImage,
   type PiModel,
   type PiProviderAuthStatus,
   type PiProviderInfo,
@@ -15,6 +16,7 @@ import {
   type PiSettings,
   type QueueState,
   type SessionInfo,
+  type SessionTreeNode,
   type ToolActivity,
   type UIMessage,
 } from "@/lib/pi-types";
@@ -71,9 +73,11 @@ interface PiState {
   isCommandPaletteOpen: boolean;
   isSettingsOpen: boolean;
   isModelDialogOpen: boolean;
+  isTreeDialogOpen: boolean;
   settingsTheme: "light" | "dark" | "system";
   setSettingsTheme: (theme: "light" | "dark" | "system") => void;
   setModelDialogOpen: (open: boolean) => void;
+  setTreeDialogOpen: (open: boolean) => void;
   /** 流式输出：开启时逐字显示，关闭时等待完整回复再显示 */
   streamingOutput: boolean;
   setStreamingOutput: (enabled: boolean) => void;
@@ -91,9 +95,9 @@ interface PiState {
   checkProviderAuth: (provider: string) => Promise<void>;
   setProviderApiKey: (provider: string, apiKey: string) => Promise<boolean>;
   removeProviderApiKey: (provider: string) => Promise<void>;
-  sendPrompt: (text: string, opts?: { streamingBehavior?: "steer" | "followUp" }) => Promise<boolean>;
-  steer: (text: string) => void;
-  followUp: (text: string) => void;
+  sendPrompt: (text: string, opts?: { streamingBehavior?: "steer" | "followUp"; images?: PiImage[] }) => Promise<boolean>;
+  steer: (text: string, images?: PiImage[]) => void;
+  followUp: (text: string, images?: PiImage[]) => void;
   abort: () => void;
   setModel: (provider: string, modelId: string) => Promise<void>;
   cycleModel: () => Promise<void>;
@@ -112,7 +116,7 @@ interface PiState {
   fork: (entryId: string) => Promise<{ text?: string; cancelled?: boolean } | null>;
   clone: () => Promise<boolean>;
   getForkMessages: () => Promise<Array<{ entryId: string; text: string }>>;
-  getTree: () => Promise<unknown>;
+  getTree: () => Promise<{ tree: SessionTreeNode[]; leafId: string | null } | null>;
   getEntries: (since?: string) => Promise<unknown>;
   exportHtml: (outputPath?: string) => Promise<string | null>;
   setSteeringMode: (mode: "all" | "one-at-a-time") => Promise<void>;
@@ -120,9 +124,15 @@ interface PiState {
   bash: (command: string) => Promise<BashResult | null>;
   abortBash: () => void;
   getLastAssistantText: () => Promise<string | null>;
+  getContextFile: () => Promise<{ path: string; content: string } | null>;
+  setContextFile: (content: string) => Promise<{ path: string } | null>;
+  listWorkspaceFiles: () => Promise<string[]>;
+  getProjectTrust: () => Promise<boolean | null>;
+  setProjectTrust: (decision: boolean | null) => Promise<void>;
   respondExtensionUi: (response: Record<string, unknown>) => void;
   dismissExtensionUi: () => void;
   clearNotice: () => void;
+  setNotice: (text: string | null) => void;
   consumeEditorPrefill: () => void;
 
   setSidebarOpen: (open: boolean) => void;
@@ -349,9 +359,15 @@ export const useChatStore = create<PiState>()((set, get) => {
     const result = ev.result;
     const output = toolResultText(result);
     const isError = Boolean(ev.isError);
+    // edit 工具的展示 diff（来自 result.details.diff / patch）
+    const details = (result && typeof result === "object" ? (result as Record<string, unknown>).details : undefined) as
+      | Record<string, unknown>
+      | undefined;
+    const diff = details && typeof details.diff === "string" ? (details.diff as string) : undefined;
+    const patch = details && typeof details.patch === "string" ? (details.patch as string) : undefined;
     set((s) => ({
       activeTools: s.activeTools.map((t) =>
-        t.toolCallId === toolCallId ? { ...t, output, isError, status: "done" as const } : t
+        t.toolCallId === toolCallId ? { ...t, output, isError, status: "done" as const, diff, patch } : t
       ),
       messages: [
         ...s.messages,
@@ -519,6 +535,7 @@ export const useChatStore = create<PiState>()((set, get) => {
     isCommandPaletteOpen: false,
     isSettingsOpen: false,
     isModelDialogOpen: false,
+    isTreeDialogOpen: false,
     settingsTheme: "system",
     streamingOutput: true,
 
@@ -697,6 +714,7 @@ export const useChatStore = create<PiState>()((set, get) => {
       const res = await piClient.request("prompt", {
         message: trimmed,
         ...(opts?.streamingBehavior ? { streamingBehavior: opts.streamingBehavior } : {}),
+        ...(opts?.images?.length ? { images: opts.images } : {}),
       });
       if (!res.success) {
         set({ lastError: res.error ?? "发送失败" });
@@ -705,12 +723,12 @@ export const useChatStore = create<PiState>()((set, get) => {
       return true;
     },
 
-    steer: (text) => {
-      piClient.send("steer", { message: text });
+    steer: (text, images) => {
+      piClient.send("steer", { message: text, ...(images?.length ? { images } : {}) });
     },
 
-    followUp: (text) => {
-      piClient.send("follow_up", { message: text });
+    followUp: (text, images) => {
+      piClient.send("follow_up", { message: text, ...(images?.length ? { images } : {}) });
     },
 
     abort: () => {
@@ -847,7 +865,14 @@ export const useChatStore = create<PiState>()((set, get) => {
 
     getTree: async () => {
       const res = await piClient.request("get_tree");
-      return res.success ? res.data : null;
+      if (res.success && res.data) {
+        const data = res.data as Record<string, unknown>;
+        return {
+          tree: Array.isArray(data.tree) ? (data.tree as SessionTreeNode[]) : [],
+          leafId: data.leafId != null ? String(data.leafId) : null,
+        };
+      }
+      return null;
     },
 
     getEntries: async (since) => {
@@ -905,6 +930,49 @@ export const useChatStore = create<PiState>()((set, get) => {
       return null;
     },
 
+    getContextFile: async () => {
+      const res = await piClient.request("get_context_file");
+      if (res.success && res.data) {
+        const data = res.data as Record<string, unknown>;
+        return { path: String(data.path ?? ""), content: String(data.content ?? "") };
+      }
+      return null;
+    },
+
+    setContextFile: async (content) => {
+      const res = await piClient.request("set_context_file", { content });
+      if (res.success && res.data) {
+        return { path: String((res.data as Record<string, unknown>).path ?? "") };
+      }
+      set({ lastError: res.error ?? "保存项目指令失败" });
+      return null;
+    },
+
+    listWorkspaceFiles: async () => {
+      const res = await piClient.request("list_workspace_files");
+      if (res.success && res.data) {
+        const files = (res.data as Record<string, unknown>).files;
+        return Array.isArray(files) ? (files as string[]) : [];
+      }
+      return [];
+    },
+
+    getProjectTrust: async () => {
+      const res = await piClient.request("get_project_trust");
+      if (res.success && res.data) {
+        const decision = (res.data as Record<string, unknown>).decision;
+        return decision === true ? true : decision === false ? false : null;
+      }
+      return null;
+    },
+
+    setProjectTrust: async (decision) => {
+      const res = await piClient.request("set_project_trust", { decision });
+      if (!res.success) {
+        set({ lastError: res.error ?? "设置项目信任失败" });
+      }
+    },
+
     respondExtensionUi: (response) => {
       piClient.send("extension_ui_response", response);
       set({ extensionUi: null });
@@ -921,12 +989,15 @@ export const useChatStore = create<PiState>()((set, get) => {
 
     clearNotice: () => set({ notice: null }),
 
+    setNotice: (text) => set({ notice: text }),
+
     consumeEditorPrefill: () => set({ editorPrefill: null }),
 
     setSidebarOpen: (open) => set({ isSidebarOpen: open }),
     setCommandPaletteOpen: (open) => set({ isCommandPaletteOpen: open }),
     setSettingsOpen: (open) => set({ isSettingsOpen: open }),
     setModelDialogOpen: (open) => set({ isModelDialogOpen: open }),
+    setTreeDialogOpen: (open) => set({ isTreeDialogOpen: open }),
     setSettingsTheme: (theme) => set({ settingsTheme: theme }),
     setStreamingOutput: (enabled) => set({ streamingOutput: enabled }),
   };

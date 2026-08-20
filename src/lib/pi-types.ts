@@ -133,6 +133,10 @@ export interface ToolActivity {
   output: string;
   isError: boolean;
   status: "running" | "done";
+  /** edit 工具的展示 diff（来自 result.details.diff） */
+  diff?: string;
+  /** edit 工具的统一 patch（来自 result.details.patch） */
+  patch?: string;
 }
 
 /** 直接 RPC bash 命令的完整返回结果 */
@@ -142,6 +146,31 @@ export interface BashResult {
   cancelled: boolean;
   truncated: boolean;
   fullOutputPath: string | null;
+}
+
+/** 输入图片（prompt/steer/follow_up 的 images 字段） */
+export interface PiImage {
+  type: "image";
+  data: string;
+  mimeType: string;
+}
+
+/** 会话树节点（get_tree 返回） */
+export interface SessionTreeNode {
+  entry: {
+    type: string;
+    id: string;
+    parentId: string | null;
+    timestamp: string;
+    message?: Record<string, unknown>;
+    thinkingLevel?: string;
+    provider?: string;
+    modelId?: string;
+    [key: string]: unknown;
+  };
+  children: SessionTreeNode[];
+  label?: string;
+  labelTimestamp?: string;
 }
 
 export interface ExtensionUiRequest {

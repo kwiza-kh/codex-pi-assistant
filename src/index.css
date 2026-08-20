@@ -33,6 +33,10 @@
     --tooltip-muted: oklch(73.1% 0.008 260.731);
     --tooltip-border: oklch(35.6% 0.007 264.474);
 
+    /* 语法高亮专用色 */
+    --syntax-fn: oklch(55% 0.19 300);
+    --syntax-type: oklch(58% 0.11 210);
+
     --shadow-hairline: 0 0 0 1px var(--line);
     --shadow-btn: 0 0 0 1px var(--line-strong), 0 1px 2px oklch(0% 0 0 / 0.04);
     --shadow-card: 0 0 0 1px var(--line), 0 18px 47px 0 oklch(0% 0 0 / 0.03), 0 7.5px 19px 0 oklch(0% 0 0 / 0.02);
@@ -97,6 +101,10 @@
     --tooltip-fg: oklch(96.4% 0.002 247.839);
     --tooltip-muted: oklch(73.1% 0.008 260.731);
     --tooltip-border: oklch(30.8% 0.006 258.354);
+
+    /* 语法高亮专用色 */
+    --syntax-fn: oklch(76% 0.13 300);
+    --syntax-type: oklch(76% 0.1 210);
 
     --shadow-hairline: 0 0 0 1px var(--line);
     --shadow-btn: 0 0 0 1px oklch(100% 0 0 / 0.1), 0 1px 2px oklch(0% 0 0 / 0.3);
@@ -256,6 +264,74 @@
 
 .animated-underline:hover {
   background-size: 100% 1px;
+}
+
+/* ---------------------------------------------------------------------------
+ * highlight.js 语法高亮配色（token 级，明暗自适应）
+ * ------------------------------------------------------------------------- */
+
+.hljs-comment,
+.hljs-quote {
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-section,
+.hljs-doctag,
+.hljs-meta-keyword {
+  color: var(--accent-ink);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: var(--green);
+}
+
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-attr,
+.hljs-attribute {
+  color: var(--orange);
+}
+
+.hljs-title,
+.hljs-title.function_,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--syntax-fn);
+}
+
+.hljs-type,
+.hljs-built_in,
+.hljs-title.class_ {
+  color: var(--syntax-type);
+}
+
+.hljs-variable,
+.hljs-template-variable,
+.hljs-params,
+.hljs-meta,
+.hljs-link,
+.hljs-selector-pseudo {
+  color: var(--ink-2);
+}
+
+.hljs-deletion {
+  color: var(--red);
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 600;
 }
 
 /* ---------------------------------------------------------------------------

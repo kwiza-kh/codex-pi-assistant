@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { StreamingText } from "@/components/StreamingText";
 
 /* ─────────────────────────────────────────────────────────
  * THINKING — 可展开的 agent 轨迹，四种变体
@@ -86,6 +87,7 @@ export function ThinkingState({
   const traceRef = useRef<HTMLDivElement>(null);
   const [lineHeight, setLineHeight] = useState(0);
   useLayoutEffect(() => {
+    if (variant === "Reasoning") return;
     if (traceRef.current) setLineHeight(traceRef.current.offsetHeight);
   }, [rows, isExpanded, variant]);
 
@@ -99,9 +101,9 @@ export function ThinkingState({
   return (
     <div
       key={variant}
-      className="flex w-full max-w-[380px] flex-col"
+      className={`flex w-full flex-col ${variant === "Reasoning" ? "" : "max-w-[380px]"}`}
       style={{
-        minHeight: isExpanded ? 176 : undefined,
+        minHeight: variant !== "Reasoning" && isExpanded ? 176 : undefined,
         transition: "min-height 400ms cubic-bezier(0.23,1,0.32,1)",
       }}
     >
@@ -157,12 +159,14 @@ export function ThinkingState({
         }}
       >
         <div className="overflow-hidden">
-          <div className="relative mt-1 ml-[5px] pl-4">
-            <span
-              aria-hidden
-              className="absolute left-[3px] w-px bg-line"
-              style={{ top: -8, height: lineHeight ? lineHeight - 2 : 0, transition: "height 500ms cubic-bezier(0.23,1,0.32,1)" }}
-            />
+          <div className={variant === "Reasoning" ? "relative mt-1" : "relative mt-1 ml-[5px] pl-4"}>
+            {variant !== "Reasoning" && (
+              <span
+                aria-hidden
+                className="absolute left-[3px] w-px bg-line"
+                style={{ top: -8, height: lineHeight ? lineHeight - 2 : 0, transition: "height 500ms cubic-bezier(0.23,1,0.32,1)" }}
+              />
+            )}
             <div ref={traceRef} className="flex flex-col gap-1 py-1">
               {query && (
                 <div className="flex h-6 items-center gap-2 px-1.5" style={{ animation: isExpanded ? "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" : undefined }}>
@@ -174,10 +178,10 @@ export function ThinkingState({
                 </div>
               )}
               {rows.map((row, i) => {
-                const primaryClass =
-                  variant === "Reasoning"
-                    ? "min-w-0 whitespace-pre-wrap text-[12.5px] leading-relaxed text-ink-2"
-                    : `min-w-0 truncate text-[12.5px] font-medium text-ink ${variant === "Search" ? "animated-underline" : ""}`;
+                if (variant === "Reasoning") {
+                  return <StreamingText key={row.primary} content={row.primary} streaming={active} />;
+                }
+                const primaryClass = `min-w-0 truncate text-[12.5px] font-medium text-ink ${variant === "Search" ? "animated-underline" : ""}`;
                 const content = (
                   <>
                     {variant === "Search" && <Dot tone={TONES[i % 3]} />}

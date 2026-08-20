@@ -2,6 +2,7 @@ import { useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   AlertTriangle,
   ChevronDown,
+  GitBranch,
   MessageSquare,
   MessageSquarePlus,
   PanelLeftClose,
@@ -165,6 +166,7 @@ export function Sidebar() {
   const refreshSessions = useChatStore((s) => s.refreshSessions);
   const status = useChatStore((s) => s.status);
   const setSettingsOpen = useChatStore((s) => s.setSettingsOpen);
+  const setTreeDialogOpen = useChatStore((s) => s.setTreeDialogOpen);
 
   const [collapsed, setCollapsed] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -255,6 +257,15 @@ export function Sidebar() {
           <SectionLabel
             action={
               <span className="flex items-center">
+                <button
+                  type="button"
+                  aria-label="会话树"
+                  title="会话树"
+                  onClick={() => setTreeDialogOpen(true)}
+                  className="flex size-7 items-center justify-center rounded-[7px] text-ink-3 transition-colors duration-150 hover:bg-hover-2 hover:text-ink"
+                >
+                  <GitBranch size={14} />
+                </button>
                 <button
                   type="button"
                   aria-label="刷新会话列表"

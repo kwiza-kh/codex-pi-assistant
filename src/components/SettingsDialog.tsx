@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Boxes, RefreshCw, RotateCw, SlidersHorizontal, TerminalSquare } from "lucide-react";
+import { Boxes, Download, FileText, RefreshCw, RotateCw, SlidersHorizontal, TerminalSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/store/chat";
 import {
@@ -9,6 +9,7 @@ import {
   type SettingField,
 } from "@/lib/pi-settings-schema";
 import { Button } from "@/components/ui/button";
+import { ContextFileDialog } from "@/components/ContextFileDialog";
 import {
   Dialog,
   DialogContent,
@@ -257,29 +258,37 @@ export function SettingsDialog() {
   const settingsPath = useChatStore((s) => s.settingsPath);
   const saveSettings = useChatStore((s) => s.saveSettings);
   const restartPi = useChatStore((s) => s.restartPi);
+  const exportHtml = useChatStore((s) => s.exportHtml);
+  const setNotice = useChatStore((s) => s.setNotice);
+  const getProjectTrust = useChatStore((s) => s.getProjectTrust);
+  const setProjectTrust = useChatStore((s) => s.setProjectTrust);
 
   const [nameDraft, setNameDraft] = React.useState("");
   const [cwdDraft, setCwdDraft] = React.useState("");
+  const [contextOpen, setContextOpen] = React.useState(false);
+  const [projectTrust, setProjectTrustState] = React.useState<boolean | null>(null);
 
   React.useEffect(() => {
     if (open) {
       setNameDraft(sessionName ?? "");
       setCwdDraft(cwd ?? "");
       refreshSettings();
+      void getProjectTrust().then(setProjectTrustState);
     }
-  }, [open, sessionName, cwd, refreshSettings]);
+  }, [open, sessionName, cwd, refreshSettings, getProjectTrust]);
 
   const onSaveField = (key: string, value: unknown) => {
     saveSettings(makeSettingsPatch(key, value));
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="flex max-h-[85vh] max-w-4xl flex-col overflow-hidden p-0">
-        <DialogHeader className="border-b px-6 py-4 pr-12">
-          <DialogTitle className="text-base">Pi Agent 设置</DialogTitle>
-          <DialogDescription className="mt-1 flex flex-col gap-1">
-            <span className="inline-flex items-center gap-2">
+    <>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="flex max-h-[85vh] max-w-4xl flex-col overflow-hidden p-0">
+          <DialogHeader className="border-b px-6 py-4 pr-12">
+            <DialogTitle className="text-base">Pi Agent 设置</DialogTitle>
+            <DialogDescription className="mt-1 flex flex-col gap-1">
+              <span className="inline-flex items-center gap-2">
               配置文件：
               <code className="max-w-[420px] truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
                 {settingsPath ?? "—"}
@@ -413,6 +422,49 @@ export function SettingsDialog() {
                 </SettingRow>
                 <Separator />
 
+                <SettingRow title="导出会话" description="把当前会话导出为 HTML 文件（export_html）">
+                  <div className="flex items-center justify-end">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8"
+                      onClick={async () => {
+                        const path = await exportHtml();
+                        if (path) {
+                          setNotice(`已导出：${path}`);
+                        }
+                      }}
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      导出 HTML
+                    </Button>
+                  </div>
+                </SettingRow>
+                <Separator />
+
+                <SettingRow title="项目指令" description="编辑 AGENTS.md / CLAUDE.md，Pi 每次启动时加载">
+                  <div className="flex items-center justify-end">
+                    <Button size="sm" variant="outline" className="h-8" onClick={() => setContextOpen(true)}>
+                      <FileText className="h-3.5 w-3.5" />
+                      编辑
+                    </Button>
+                  </div>
+                </SettingRow>
+                <Separator />
+
+                <SettingRow title="项目信任" description="控制 Pi 是否信任当前工作目录的本地资源（skills/扩展等）">
+                  <ModeSelector
+                    value={projectTrust === null ? "ask" : projectTrust ? "always" : "never"}
+                    options={["ask", "always", "never"]}
+                    onSelect={(v) => {
+                      const decision = v === "always" ? true : v === "never" ? false : null;
+                      setProjectTrustState(decision);
+                      void setProjectTrust(decision);
+                    }}
+                  />
+                </SettingRow>
+                <Separator />
+
                 <div className="grid grid-cols-2 gap-3 py-4 sm:grid-cols-4">
                   {[
                     { label: "会话消息", value: stats?.totalMessages ?? "—" },
@@ -467,7 +519,9 @@ export function SettingsDialog() {
             </div>
           </Tabs>
         </div>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+      <ContextFileDialog open={contextOpen} onOpenChange={setContextOpen} />
+    </>
   );
 }
