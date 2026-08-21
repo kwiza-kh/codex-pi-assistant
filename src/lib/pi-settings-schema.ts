@@ -166,7 +166,7 @@ export const SETTINGS_TABS: SettingsTab[] = [
           { key: "shellPath", label: "Shell 路径", desc: "如 C:/Program Files/Git/bin/bash.exe", type: "string", placeholder: "C:/Program Files/Git/bin/bash.exe" },
           { key: "shellCommandPrefix", label: "Shell 命令前缀", desc: "每条 bash 命令前附加", type: "string", placeholder: "shopt -s expand_aliases" },
           { key: "npmCommand", label: "npm 命令（JSON 数组）", desc: "如 [\"mise\",\"exec\",\"node@20\",\"--\",\"npm\"]", type: "json", defaultValue: [] },
-          { key: "defaultTools", label: "默认工具（JSON 数组）", desc: "如 [\"bash\",\"edit\",\"write\"]，空数组=无内置工具", type: "json", defaultValue: [] },
+          { key: "defaultTools", label: "默认工具（JSON 数组）", desc: "如 [\"bash\",\"edit\",\"write\"]，空数组=无内置工具（也可在上方「运行」标签用开关配置）", type: "json", defaultValue: [] },
         ],
       },
     ],

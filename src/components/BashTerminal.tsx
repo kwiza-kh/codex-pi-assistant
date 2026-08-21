@@ -49,12 +49,12 @@ export function BashTerminal() {
   };
 
   return (
-    <div className="border-t border-dashed border-line">
+    <div className={cn("flex flex-col border-t border-dashed border-line", open && "min-h-0 flex-1")}>
       {/* 折叠头 */}
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 px-4 py-1.5 text-left text-[11px] font-medium text-ink-3 transition-colors hover:bg-hover hover:text-ink-2"
+        className="flex w-full shrink-0 items-center gap-2 px-4 py-1.5 text-left text-[11px] font-medium text-ink-3 transition-colors hover:bg-hover hover:text-ink-2"
       >
         <TerminalSquare className="h-3.5 w-3.5" />
         <span>终端</span>
@@ -65,9 +65,9 @@ export function BashTerminal() {
       </button>
 
       {open && (
-        <div className="flex flex-col border-t border-line bg-inset">
+        <div className="flex min-h-0 flex-1 flex-col border-t border-line bg-inset">
           {/* 输出区 */}
-          <div ref={scrollRef} className="max-h-48 overflow-y-auto px-4 py-2 font-mono text-[11px] leading-5 text-ink-2">
+          <div ref={scrollRef} className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-4 py-2 font-mono text-[11px] leading-5 text-ink-2">
             {history.length === 0 && !activeBashOutput && (
               <div className="text-ink-3">输入 shell 命令并回车，输出会实时显示在这里。</div>
             )}
@@ -99,7 +99,7 @@ export function BashTerminal() {
           </div>
 
           {/* 命令输入 */}
-          <div className="flex items-center gap-2 border-t border-line px-4 py-2">
+          <div className="flex shrink-0 items-center gap-2 border-t border-line px-4 py-2">
             <span className="select-none font-mono text-[11px] text-ink-3">$</span>
             <input
               ref={inputRef}

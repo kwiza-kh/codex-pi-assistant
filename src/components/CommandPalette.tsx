@@ -28,6 +28,7 @@ export function CommandPalette() {
   const settingsTheme = useChatStore((s) => s.settingsTheme);
   const setSettingsTheme = useChatStore((s) => s.setSettingsTheme);
   const setSettingsOpen = useChatStore((s) => s.setSettingsOpen);
+  const sendPrompt = useChatStore((s) => s.sendPrompt);
 
   const [query, setQuery] = React.useState("");
   const [cursor, setCursor] = React.useState(0);
@@ -56,7 +57,6 @@ export function CommandPalette() {
 
     const commandItems: CommandItem[] = commands
       .filter((c) => !q || c.name.toLowerCase().includes(q))
-      .slice(0, 6)
       .map((c) => ({
         id: `cmd:${c.name}`,
         group: "命令" as const,
@@ -65,6 +65,8 @@ export function CommandPalette() {
         icon: <ListChecks className="h-4 w-4" />,
         onSelect: () => {
           setOpen(false);
+          // 直接执行 /命令（Pi 的 prompt 会展开并执行 slash command）
+          void sendPrompt(`/${c.name}`);
         },
       }));
 
@@ -102,7 +104,7 @@ export function CommandPalette() {
     ];
 
     return [...sessionItems, ...commandItems, ...actions];
-  }, [query, sessions, commands, sessionId, settingsTheme, switchSession, setOpen, newSession, setSettingsTheme, setSettingsOpen]);
+  }, [query, sessions, commands, sessionId, settingsTheme, switchSession, setOpen, newSession, setSettingsTheme, setSettingsOpen, sendPrompt]);
 
   React.useEffect(() => {
     if (open) {

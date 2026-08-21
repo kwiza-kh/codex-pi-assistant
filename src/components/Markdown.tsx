@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { Check, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { highlightLines } from "@/lib/highlight";
+import { Mermaid } from "@/components/Mermaid";
 
 function extractText(children: React.ReactNode): string {
   if (typeof children === "string") return children;
@@ -151,6 +152,9 @@ export function Markdown({ content }: { content: string }) {
             const text = extractText(children);
             const isBlock = Boolean(match) || text.includes("\n");
             if (isBlock) {
+              if ((match?.[1] ?? "").toLowerCase() === "mermaid") {
+                return <Mermaid code={text} />;
+              }
               return <CodeBlock language={match?.[1] ?? "text"} code={text} />;
             }
             return (

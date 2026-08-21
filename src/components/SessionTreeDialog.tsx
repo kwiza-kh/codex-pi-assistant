@@ -1,5 +1,5 @@
 import * as React from "react";
-import { GitBranch, GitFork, MessageSquare, RefreshCw, X } from "lucide-react";
+import { Bot, GitBranch, GitFork, RefreshCw, User, Wrench, X } from "lucide-react";
 import { useChatStore } from "@/store/chat";
 import type { SessionTreeNode } from "@/lib/pi-types";
 import { cn } from "@/lib/utils";
@@ -18,14 +18,14 @@ import { Button } from "@/components/ui/button";
  * 复制当前分支（clone）。数据来自 get_tree RPC。
  * ───────────────────────────────────────────────────────── */
 
-function nodeText(entry: SessionTreeNode["entry"]): string {
+function nodeInfo(entry: SessionTreeNode["entry"]): { label: string; kind: "user" | "assistant" | "tool" | "meta"; toolName?: string } {
   const msg = entry.message;
   if (!msg) {
-    if (entry.type === "model_change") return `切换模型：${entry.modelId ?? ""}`;
-    if (entry.type === "thinking_level_change") return `思考等级：${entry.thinkingLevel ?? ""}`;
-    if (entry.type === "compaction") return "上下文压缩";
-    if (entry.type === "branch_summary" || entry.type === "branchSummary") return "分支摘要";
-    return entry.type;
+    if (entry.type === "model_change") return { label: `切换模型：${entry.modelId ?? ""}`, kind: "meta" };
+    if (entry.type === "thinking_level_change") return { label: `思考等级：${entry.thinkingLevel ?? ""}`, kind: "meta" };
+    if (entry.type === "compaction") return { label: "上下文压缩", kind: "meta" };
+    if (entry.type === "branch_summary" || entry.type === "branchSummary") return { label: "分支摘要", kind: "meta" };
+    return { label: entry.type, kind: "meta" };
   }
   const role = (msg as Record<string, unknown>).role;
   if (role === "user") {
@@ -33,7 +33,7 @@ function nodeText(entry: SessionTreeNode["entry"]): string {
     const text = typeof content === "string" ? content : Array.isArray(content)
       ? (content as Array<Record<string, unknown>>).map((b) => String(b.text ?? "")).join(" ")
       : "";
-    return text.trim().slice(0, 60) || "(图片)";
+    return { label: text.trim().slice(0, 60) || "(图片)", kind: "user" };
   }
   if (role === "assistant") {
     const content = (msg as Record<string, unknown>).content;
@@ -43,29 +43,40 @@ function nodeText(entry: SessionTreeNode["entry"]): string {
           .map((b) => String(b.text ?? ""))
           .join(" ")
       : "";
-    return text.trim().slice(0, 60) || "…";
+    return { label: text.trim().slice(0, 60) || "…", kind: "assistant" };
   }
-  if (role === "toolResult") return `工具：${(msg as Record<string, unknown>).toolName ?? ""}`;
-  return String(role ?? "");
+  if (role === "toolResult") {
+    const toolName = String((msg as Record<string, unknown>).toolName ?? "");
+    return { label: `工具：${toolName}`, kind: "tool", toolName };
+  }
+  return { label: String(role ?? ""), kind: "meta" };
+}
+
+function nodeIcon(kind: "user" | "assistant" | "tool" | "meta", toolName?: string) {
+  if (kind === "user") return { Icon: User, cls: "text-sky-500" };
+  if (kind === "assistant") return { Icon: Bot, cls: "text-violet-500" };
+  if (kind === "tool") return { Icon: Wrench, cls: toolName === "bash" ? "text-emerald-500" : "text-amber-500" };
+  return { Icon: GitBranch, cls: "text-ink-3/70" };
 }
 
 function TreeNode({
   node,
   depth,
   leafId,
-  activeId,
   onFork,
+  onLocate,
 }: {
   node: SessionTreeNode;
   depth: number;
   leafId: string | null;
-  activeId: string | null;
   onFork: (entryId: string) => void;
+  onLocate?: (messageId: string | null) => void;
 }) {
   const isLeaf = node.entry.id === leafId;
-  const isActive = node.entry.id === activeId;
   const isMessage = node.entry.type === "message";
-  const label = nodeText(node.entry);
+  const info = nodeInfo(node.entry);
+  const { Icon, cls } = nodeIcon(info.kind, info.toolName);
+  const messageId = isMessage ? String((node.entry.message as Record<string, unknown>)?.id ?? "") || null : null;
 
   return (
     <div>
@@ -73,23 +84,29 @@ function TreeNode({
         className={cn(
           "group flex items-start gap-2 rounded-[6px] py-1 pl-1 pr-1.5 transition-colors hover:bg-hover",
           isLeaf && "bg-accent-tint",
+          isMessage && "cursor-pointer",
         )}
         style={{ paddingLeft: depth * 16 + 4 }}
+        onClick={() => {
+          if (isMessage && onLocate) onLocate(messageId);
+        }}
       >
-        <span className={cn("mt-0.5 shrink-0", isMessage ? "text-ink-3" : "text-ink-3/60")}>
-          <MessageSquare className="h-3.5 w-3.5" />
+        <span className={cn("mt-0.5 shrink-0", isMessage ? cls : "text-ink-3/60")}>
+          <Icon className="h-3.5 w-3.5" />
         </span>
         <span className={cn("min-w-0 flex-1 truncate text-[12px]", isLeaf ? "font-medium text-ink" : "text-ink-2")}>
-          {label}
+          {info.label}
         </span>
         {isLeaf && <span className="shrink-0 rounded bg-green-tint px-1 text-[10px] text-green">当前</span>}
-        {isActive && !isLeaf && <span className="shrink-0 rounded bg-accent-tint px-1 text-[10px] text-accent-ink">活动</span>}
         {isMessage && (
           <button
             type="button"
             aria-label="从此处 fork"
             title="从此处分叉"
-            onClick={() => onFork(node.entry.id)}
+            onClick={(e) => {
+              e.stopPropagation();
+              onFork(node.entry.id);
+            }}
             className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
           >
             <GitFork className="h-3.5 w-3.5 text-ink-3 hover:text-ink" />
@@ -97,7 +114,7 @@ function TreeNode({
         )}
       </div>
       {node.children.map((child) => (
-        <TreeNode key={child.entry.id} node={child} depth={depth + 1} leafId={leafId} activeId={activeId} onFork={onFork} />
+        <TreeNode key={child.entry.id} node={child} depth={depth + 1} leafId={leafId} onFork={onFork} onLocate={onLocate} />
       ))}
     </div>
   );
@@ -109,7 +126,6 @@ export function SessionTreeDialog() {
   const getTree = useChatStore((s) => s.getTree);
   const fork = useChatStore((s) => s.fork);
   const clone = useChatStore((s) => s.clone);
-  const sessionId = useChatStore((s) => s.sessionId);
   const [tree, setTree] = React.useState<SessionTreeNode[]>([]);
   const [leafId, setLeafId] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(false);
@@ -135,6 +151,16 @@ export function SessionTreeDialog() {
     await fork(entryId);
     setBusy(null);
     setOpen(false);
+  };
+
+  const handleLocate = (messageId: string | null) => {
+    setOpen(false);
+    if (!messageId) return;
+    // 等弹窗关闭后再定位
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`msg-${messageId}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
   };
 
   return (
@@ -164,7 +190,7 @@ export function SessionTreeDialog() {
               </Button>
             </div>
           </div>
-          <DialogDescription>任意消息节点 hover 可 fork 分叉；「当前」为活跃分支末端。</DialogDescription>
+          <DialogDescription>点击消息节点定位到对应消息；任意消息节点 hover 可 fork 分叉；「当前」为活跃分支末端。</DialogDescription>
         </DialogHeader>
 
         <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-2 py-2">
@@ -175,7 +201,7 @@ export function SessionTreeDialog() {
             </div>
           ) : (
             tree.map((node) => (
-              <TreeNode key={node.entry.id} node={node} depth={0} leafId={leafId} activeId={sessionId} onFork={handleFork} />
+              <TreeNode key={node.entry.id} node={node} depth={0} leafId={leafId} onFork={handleFork} onLocate={handleLocate} />
             ))
           )}
         </div>

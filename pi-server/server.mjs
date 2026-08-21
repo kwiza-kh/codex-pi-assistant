@@ -93,6 +93,8 @@ function spawnPi() {
   const proc = spawn(cmd, spawnArgs, options);
   child = proc;
   childExitInfo = null;
+  // 新进程 = 新的 JSONL 流，清掉旧进程可能残留的半行缓冲
+  stdoutBuf = "";
 
   proc.stdout.on("data", (buf) => {
     broadcastRaw(buf.toString("utf8"));
@@ -505,22 +507,28 @@ function broadcast(obj) {
   }
 }
 
+// stdout 可能一次带多行 JSON，也可能出现跨 chunk 的半行。
+// buf 必须是模块级（跨调用保留），否则大响应被拆成多个 data chunk 时半行会丢失，
+// 导致响应帧被截断/错位（如 get_messages 返回大量消息时超时、出现残缺的非 JSON 行）。
+let stdoutBuf = "";
+
 function broadcastRaw(text) {
-  // stdout 可能一次带多行 JSON，也可能出现半行，这里逐行广播
-  let buf = "";
-  const push = (chunk) => {
-    buf += chunk;
-    let idx;
-    while ((idx = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, idx).replace(/\r$/, "");
-      buf = buf.slice(idx + 1);
-      if (line.trim()) broadcastJsonLine(line);
-    }
-  };
-  push(text);
-};
+  stdoutBuf += text;
+  let idx;
+  while ((idx = stdoutBuf.indexOf("\n")) >= 0) {
+    const line = stdoutBuf.slice(0, idx).replace(/\r$/, "");
+    stdoutBuf = stdoutBuf.slice(idx + 1);
+    if (line.trim()) broadcastJsonLine(line);
+  }
+}
 
 function broadcastJsonLine(line) {
+  // 校验必须是合法 JSON，避免 pi 子进程输出的非 JSON 行污染前端消息流
+  try {
+    JSON.parse(line);
+  } catch {
+    return;
+  }
   for (const ws of clients) {
     if (ws.readyState === WebSocket.OPEN) {
       try {

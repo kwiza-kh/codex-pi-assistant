@@ -10,38 +10,38 @@ export function ChatView() {
   const isStreaming = useChatStore((s) => s.isStreaming);
   const sendPrompt = useChatStore((s) => s.sendPrompt);
   const bottomRef = React.useRef<HTMLDivElement>(null);
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+  const stickToBottom = React.useRef(true);
+  const prevMsgCount = React.useRef(0);
 
-  const lastContent = liveMessage?.text ?? messages[messages.length - 1]?.text ?? "";
-
-  React.useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length, lastContent, liveMessage?.blocks.length]);
-
-  const handleRegenerate = (assistantMessageId: string) => {
-    const idx = messages.findIndex((m) => m.id === assistantMessageId);
-    if (idx < 1) return;
-    for (let i = idx - 1; i >= 0; i--) {
-      if (messages[i].role === "user") {
-        sendPrompt(messages[i].text);
-        return;
-      }
-    }
+  // 用户手动滚动时，若滚离底部则暂停自动跟随
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
   };
 
+  // 仅在「新增了一条消息」时自动滚到底部（而非每个流式 delta 都拉）
+  React.useEffect(() => {
+    const msgCount = messages.length;
+    if (msgCount !== prevMsgCount.current) {
+      prevMsgCount.current = msgCount;
+      if (stickToBottom.current) {
+        bottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+      }
+    }
+  }, [messages.length]);
+
   return (
-    <div className="scrollbar-thin flex-1 overflow-y-auto">
+    <div ref={scrollRef} onScroll={onScroll} className="scrollbar-thin flex-1 overflow-y-auto">
       {messages.length === 0 && !liveMessage ? (
         <EmptyState onPick={(prompt) => sendPrompt(prompt)} />
       ) : (
         <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8">
           {messages.map((m) => (
-            <MessageBubble
-              key={m.id}
-              message={m}
-              isLast={false}
-              showTimestamp
-              onRegenerate={m.role === "assistant" ? () => handleRegenerate(m.id) : undefined}
-            />
+            <div key={m.id} id={`msg-${m.id}`} className="scroll-mt-20">
+              <MessageBubble message={m} isLast={false} showTimestamp />
+            </div>
           ))}
 
           {liveMessage && (

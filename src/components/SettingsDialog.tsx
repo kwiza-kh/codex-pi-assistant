@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Boxes, Download, FileText, RefreshCw, RotateCw, SlidersHorizontal, TerminalSquare } from "lucide-react";
+import { Boxes, Download, FileText, RefreshCw, RotateCw, SlidersHorizontal, TerminalSquare, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/store/chat";
 import {
@@ -33,6 +33,119 @@ const CONTROL_BOX = "w-full rounded-md border bg-transparent";
 
 function ControlShell({ children }: { children: React.ReactNode }) {
   return <div className="w-full sm:w-[280px] sm:justify-self-end">{children}</div>;
+}
+
+/* ---------------------------------------------------------------------------
+ * 内置工具开关（defaultTools 白名单）
+ * Pi 内置工具：read / write / edit / bash / grep / glob / find / ls。
+ * 空数组=无内置工具；未设置时 Pi 使用全部内置工具（默认全开）。
+ * ------------------------------------------------------------------------- */
+
+const BUILTIN_TOOLS = [
+  { name: "read", label: "读取文件", desc: "read" },
+  { name: "write", label: "写入文件", desc: "write" },
+  { name: "edit", label: "编辑文件", desc: "edit" },
+  { name: "bash", label: "执行命令", desc: "bash" },
+  { name: "grep", label: "搜索文本", desc: "grep" },
+  { name: "find", label: "查找文件", desc: "find" },
+  { name: "ls", label: "列出目录", desc: "ls" },
+];
+
+const TOOL_ICON_TONE: Record<string, string> = {
+  read: "text-sky-500 bg-sky-500/10",
+  write: "text-amber-500 bg-amber-500/10",
+  edit: "text-violet-500 bg-violet-500/10",
+  bash: "text-emerald-500 bg-emerald-500/10",
+  grep: "text-rose-500 bg-rose-500/10",
+  find: "text-indigo-500 bg-indigo-500/10",
+  ls: "text-orange-500 bg-orange-500/10",
+};
+
+function ToolsSwitch({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (tools: string[]) => void;
+}) {
+  const enabled = new Set(value);
+
+  const toggle = (name: string) => {
+    const next = new Set(enabled);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    onChange(Array.from(next));
+  };
+
+  // 快捷档位
+  const setMode = (mode: "all" | "readonly" | "none") => {
+    if (mode === "all") onChange(BUILTIN_TOOLS.map((t) => t.name));
+    else if (mode === "readonly") onChange(["read", "grep", "find", "ls"]);
+    else onChange([]);
+  };
+
+  return (
+    <div className="w-full">
+      <div className="mb-2 flex flex-wrap gap-1">
+        {(
+          [
+            { mode: "all", label: "全部" },
+            { mode: "readonly", label: "仅读" },
+            { mode: "none", label: "无工具" },
+          ] as const
+        ).map(({ mode, label }) => (
+          <button
+            key={mode}
+            type="button"
+            onClick={() => setMode(mode)}
+            className="rounded-[6px] border px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="grid grid-cols-2 gap-1.5">
+        {BUILTIN_TOOLS.map((tool) => {
+          const on = enabled.has(tool.name);
+          return (
+            <button
+              key={tool.name}
+              type="button"
+              aria-pressed={on}
+              onClick={() => toggle(tool.name)}
+              className={cn(
+                "flex items-center gap-2 rounded-[7px] border px-2 py-1.5 text-left transition-colors",
+                on
+                  ? "border-primary/40 bg-accent/60"
+                  : "border-border bg-transparent hover:bg-accent/30"
+              )}
+            >
+              <span className={cn("flex size-6 shrink-0 items-center justify-center rounded-md", TOOL_ICON_TONE[tool.name] ?? "bg-muted text-muted-foreground")}>
+                <Wrench className="h-3 w-3" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className={cn("block truncate text-[12px] font-medium", on ? "text-foreground" : "text-muted-foreground")}>
+                  {tool.label}
+                </span>
+                <span className="block truncate font-mono text-[10px] text-muted-foreground">{tool.desc}</span>
+              </span>
+              <span
+                className={cn(
+                  "flex h-4 w-7 shrink-0 items-center rounded-full p-0.5 transition-colors",
+                  on ? "bg-primary" : "bg-muted"
+                )}
+              >
+                <span className={cn("h-3 w-3 rounded-full bg-white shadow transition-transform", on && "translate-x-3")} />
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {value.length === 0 && (
+        <p className="mt-1.5 text-[11px] text-muted-foreground">当前未启用任何内置工具。</p>
+      )}
+    </div>
+  );
 }
 
 function SettingRow({
@@ -166,7 +279,10 @@ function JsonField({ field, value, onSave }: { field: SettingField; value: unkno
           if (error) return;
           try {
             const parsed = JSON.parse(draft);
-            onSave(parsed);
+            // 只有实际变化时才保存，避免未编辑的 JSON 字段（如 defaultTools）
+            // 在 blur 时被意外写入，从而静默覆盖真实配置。
+            const current = JSON.stringify(value ?? field.defaultValue ?? null);
+            if (JSON.stringify(parsed) !== current) onSave(parsed);
           } catch {
             /* ignore */
           }
@@ -267,6 +383,7 @@ export function SettingsDialog() {
   const [cwdDraft, setCwdDraft] = React.useState("");
   const [contextOpen, setContextOpen] = React.useState(false);
   const [projectTrust, setProjectTrustState] = React.useState<boolean | null>(null);
+  const [tools, setTools] = React.useState<string[]>([]);
 
   React.useEffect(() => {
     if (open) {
@@ -277,8 +394,22 @@ export function SettingsDialog() {
     }
   }, [open, sessionName, cwd, refreshSettings, getProjectTrust]);
 
+  // 同步 defaultTools：未设置/空数组时视为全部启用（Pi 内置默认）
+  React.useEffect(() => {
+    if (open && settings) {
+      const t = Array.isArray(settings.defaultTools) ? (settings.defaultTools as string[]) : null;
+      setTools(t ?? BUILTIN_TOOLS.map((tool) => tool.name));
+    }
+  }, [open, settings]);
+
   const onSaveField = (key: string, value: unknown) => {
     saveSettings(makeSettingsPatch(key, value));
+  };
+
+  const onSaveTools = (next: string[]) => {
+    setTools(next);
+    // 空数组=无内置工具，需要持久化空数组（而不是删掉 key）
+    saveSettings(makeSettingsPatch("defaultTools", next));
   };
 
   return (
@@ -465,13 +596,18 @@ export function SettingsDialog() {
                 </SettingRow>
                 <Separator />
 
+                <SettingRow title="内置工具" description="控制 Pi 可用的内置工具（defaultTools），切换后重启 Pi 生效">
+                  <ToolsSwitch value={tools} onChange={onSaveTools} />
+                </SettingRow>
+                <Separator />
+
                 <div className="grid grid-cols-2 gap-3 py-4 sm:grid-cols-4">
                   {[
                     { label: "会话消息", value: stats?.totalMessages ?? "—" },
                     { label: "工具调用", value: stats?.toolCalls ?? "—" },
                     {
                       label: "上下文",
-                      value: stats?.contextUsage ? `${stats.contextUsage.percent ?? 0}%` : "—",
+                      value: stats?.contextUsage ? `${Number(stats.contextUsage.percent ?? 0).toFixed(2)}%` : "—",
                     },
                     {
                       label: "预估成本",
@@ -484,6 +620,25 @@ export function SettingsDialog() {
                     </div>
                   ))}
                 </div>
+
+                {stats?.tokens && (
+                  <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
+                    {[
+                      { label: "输入 token", value: stats.tokens.input },
+                      { label: "输出 token", value: stats.tokens.output },
+                      { label: "缓存读", value: stats.tokens.cacheRead },
+                      { label: "缓存写", value: stats.tokens.cacheWrite },
+                      { label: "总 token", value: stats.tokens.totalTokens ?? stats.tokens.input + stats.tokens.output },
+                    ].map((item) => (
+                      <div key={item.label} className="rounded-lg border bg-inset px-3 py-2.5">
+                        <div className="text-[11px] text-muted-foreground">{item.label}</div>
+                        <div className="mt-0.5 truncate text-base font-semibold tabular-nums">
+                          {item.value != null ? Number(item.value).toLocaleString() : "—"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </TabsContent>
 
               {/* 持久化设置 */}

@@ -43,6 +43,8 @@ interface PiState {
   isStreaming: boolean;
   isCompacting: boolean;
   autoCompactionEnabled: boolean;
+  /** 自动重试进度：attempt / maxAttempts（未重试时 null） */
+  retryInfo: { attempt: number; maxAttempts: number } | null;
   steeringMode: string;
   followUpMode: string;
   queue: QueueState;
@@ -116,6 +118,10 @@ interface PiState {
   fork: (entryId: string) => Promise<{ text?: string; cancelled?: boolean } | null>;
   clone: () => Promise<boolean>;
   getForkMessages: () => Promise<Array<{ entryId: string; text: string }>>;
+  /** 从某条消息（user 或 assistant）fork 并重发其对应的用户提示 */
+  regenerateMessage: (messageId: string) => Promise<boolean>;
+  /** 回退到某条用户消息之前（fork 但不重发，供用户重新输入） */
+  rollbackToMessage: (messageId: string) => Promise<boolean>;
   getTree: () => Promise<{ tree: SessionTreeNode[]; leafId: string | null } | null>;
   getEntries: (since?: string) => Promise<unknown>;
   exportHtml: (outputPath?: string) => Promise<string | null>;
@@ -206,9 +212,10 @@ export const useChatStore = create<PiState>()((set, get) => {
   };
 
   const onAutoRetryStart = (ev: Record<string, unknown>) => {
-    const attempt = Number(ev.attempt ?? 1);
-    const max = Number(ev.maxAttempts ?? "?");
-    set({ notice: `瞬时错误，自动重试（${attempt}/${max}）…` });
+    const attempt = Number(ev.attempt ?? 1) || 1;
+    const maxRaw = Number(ev.maxAttempts ?? NaN);
+    const max = Number.isFinite(maxRaw) ? maxRaw : attempt; // 避免 NaN
+    set({ notice: `瞬时错误，自动重试（${attempt}/${max}）…`, retryInfo: { attempt, maxAttempts: max } });
   };
 
   const onAutoRetryEnd = (ev: Record<string, unknown>) => {
@@ -216,7 +223,7 @@ export const useChatStore = create<PiState>()((set, get) => {
       const finalError = String(ev.finalError ?? "未知错误");
       set({ lastError: `重试失败：${finalError}` });
     }
-    set({ notice: null });
+    set({ notice: null, retryInfo: null });
   };
 
   const onSummarizationRetryScheduled = (ev: Record<string, unknown>) => {
@@ -243,6 +250,8 @@ export const useChatStore = create<PiState>()((set, get) => {
   };
 
   const onMessageUpdate = (ev: Record<string, unknown>) => {
+    // 流式关闭时：不累积增量，等 message_end 一次性落定完整消息，避免渲染残缺 markdown
+    if (!get().streamingOutput) return;
     const e = (ev.assistantMessageEvent ?? {}) as Record<string, unknown>;
     const deltaType = e.type as string | undefined;
     const live = get().liveMessage;
@@ -381,6 +390,7 @@ export const useChatStore = create<PiState>()((set, get) => {
           toolCallId,
           args,
           isError,
+          diff,
         },
       ],
     }));
@@ -511,6 +521,7 @@ export const useChatStore = create<PiState>()((set, get) => {
     isStreaming: false,
     isCompacting: false,
     autoCompactionEnabled: true,
+    retryInfo: null,
     steeringMode: "one-at-a-time",
     followUpMode: "one-at-a-time",
     queue: initialQueue,
@@ -658,9 +669,23 @@ export const useChatStore = create<PiState>()((set, get) => {
     refreshCatalogModels: async () => {
       set({ modelsRefreshing: true });
       try {
+        // 先强制从网络刷新模型目录，再读取最新缓存列表
+        const refreshRes = await piClient.request("refresh_models");
+        if (!refreshRes.success) {
+          set({ lastError: refreshRes.error ?? "刷新模型目录失败" });
+        } else {
+          const errors = ((refreshRes.data as Record<string, unknown>)?.errors ?? {}) as Record<string, string>;
+          const entries = Object.entries(errors);
+          if (entries.length > 0) {
+            set({ lastError: `部分模型目录刷新失败：${entries.map(([k, v]) => `${k}: ${v}`).join("; ")}` });
+          }
+        }
+
         const res = await piClient.request("get_models");
         if (res.success && res.data) {
           set({ catalogModels: (res.data.models as PiCatalogModel[]) ?? [] });
+          // 模型目录刷新后同步更新 Provider 列表里的模型数量
+          await get().refreshProviders();
         } else {
           set({ lastError: res.error ?? "获取模型目录失败" });
         }
@@ -861,6 +886,92 @@ export const useChatStore = create<PiState>()((set, get) => {
         return Array.isArray(list) ? (list as Array<{ entryId: string; text: string }>) : [];
       }
       return [];
+    },
+
+    regenerateMessage: async (messageId) => {
+      const { messages } = get();
+      const idx = messages.findIndex((m) => m.id === messageId);
+      if (idx < 0) return false;
+
+      // 定位目标用户消息：user 消息用自身，assistant 用其之前最近的一条 user
+      let userIdx = -1;
+      if (messages[idx].role === "user") {
+        userIdx = idx;
+      } else {
+        for (let i = idx - 1; i >= 0; i--) {
+          if (messages[i].role === "user") {
+            userIdx = i;
+            break;
+          }
+        }
+      }
+      if (userIdx < 0) return false;
+
+      // 该用户消息在所有 user 消息中的序号（与 get_fork_messages 的返回顺序对齐）
+      let userOrder = -1;
+      for (let i = 0; i <= userIdx; i++) {
+        if (messages[i].role === "user") userOrder++;
+      }
+
+      const forkMessages = await get().getForkMessages();
+      const target = forkMessages[userOrder];
+      if (!target) {
+        set({ lastError: "找不到可重新生成的消息" });
+        return false;
+      }
+
+      const res = await piClient.request("fork", { entryId: target.entryId });
+      if (res.success && res.data) {
+        const text = String((res.data as Record<string, unknown>).text ?? "");
+        set({ messages: [], activeTools: [], liveMessage: null });
+        await get().refreshAll();
+        if (text) await get().sendPrompt(text);
+        return true;
+      }
+      set({ lastError: res.error ?? "重新生成失败" });
+      return false;
+    },
+
+    rollbackToMessage: async (messageId) => {
+      const { messages } = get();
+      const idx = messages.findIndex((m) => m.id === messageId);
+      if (idx < 0) return false;
+
+      // 定位该消息之前最近的一条 user 消息（回退点）
+      let userIdx = -1;
+      for (let i = idx - 1; i >= 0; i--) {
+        if (messages[i].role === "user") {
+          userIdx = i;
+          break;
+        }
+      }
+      // 若自身就是 user 且无更早 user，则无可回退点
+      if (userIdx < 0) {
+        set({ lastError: "该消息之前没有可回退的历史" });
+        return false;
+      }
+
+      let userOrder = -1;
+      for (let i = 0; i <= userIdx; i++) {
+        if (messages[i].role === "user") userOrder++;
+      }
+
+      const forkMessages = await get().getForkMessages();
+      const target = forkMessages[userOrder];
+      if (!target) {
+        set({ lastError: "找不到回退目标" });
+        return false;
+      }
+
+      // fork 到该用户消息（保留其之前的历史），但不重发
+      const res = await piClient.request("fork", { entryId: target.entryId });
+      if (res.success && res.data) {
+        set({ messages: [], activeTools: [], liveMessage: null });
+        await get().refreshAll();
+        return true;
+      }
+      set({ lastError: res.error ?? "回退失败" });
+      return false;
     },
 
     getTree: async () => {

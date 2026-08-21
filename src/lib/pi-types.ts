@@ -124,6 +124,10 @@ export interface UIMessage {
   provider?: string;
   timestamp?: number;
   usage?: PiUsage;
+  /** edit/write 工具的统一 diff（来自 result.details.diff） */
+  diff?: string;
+  /** edit 工具的统一 patch（来自 result.details.patch） */
+  patch?: string;
 }
 
 export interface ToolActivity {
@@ -325,6 +329,13 @@ export function parseAgentMessage(raw: Record<string, unknown>, fallbackId?: str
     base.resultText = contentToText(raw.content);
     base.text = base.resultText ?? "";
     base.isError = Boolean(raw.isError);
+    // 解析 edit/write 的 diff/patch，刷新后保留可视化 diff（onToolEnd 已设置，这里补解析持久化消息）
+    const rawResult = (raw.result ?? {}) as Record<string, unknown>;
+    const details = (rawResult.details ?? {}) as Record<string, unknown>;
+    const rawDiff = raw.diff ?? details.diff;
+    const rawPatch = raw.patch ?? details.patch;
+    if (typeof rawDiff === "string") base.diff = rawDiff as string;
+    if (typeof rawPatch === "string") base.patch = rawPatch as string;
   } else if (role === "bashExecution") {
     base.command = typeof raw.command === "string" ? (raw.command as string) : undefined;
     base.exitCode = typeof raw.exitCode === "number" ? (raw.exitCode as number) : undefined;

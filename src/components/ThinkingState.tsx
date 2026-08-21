@@ -16,6 +16,8 @@ import { StreamingText } from "@/components/StreamingText";
 export type ThinkingVariant = "Steps" | "Reasoning" | "Search" | "Coding";
 
 export type ThinkingRow = {
+  /** 唯一标识（并发同名工具用 toolCallId 区分）；缺省回退到 primary */
+  id?: string;
   primary: string;
   secondary?: string;
   mono?: boolean;
@@ -228,13 +230,14 @@ export function ThinkingState({
                 }
 
                 if (variant === "Coding") {
-                  const selected = selectedTool === row.primary;
+                  const rowId = row.id ?? row.primary;
+                  const selected = selectedTool === rowId;
                   return (
-                    <div key={row.primary} style={animation}>
+                    <div key={rowId} style={animation}>
                       <button
                         type="button"
                         aria-pressed={selected}
-                        onClick={() => setSelectedTool(selected ? null : row.primary)}
+                        onClick={() => setSelectedTool(selected ? null : rowId)}
                         className={`${rowClass} transition-colors duration-150 ${selected ? "bg-inset" : "hover:bg-hover"}`}
                       >
                         {content}
